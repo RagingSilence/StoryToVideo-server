@@ -39,6 +39,9 @@ func TaskProgressWebSocket(c *gin.Context) {
 	}
 	// 任务完成推送
 	staticURL := "/static/tasks/" + taskID + "/result.mp4"
+	if taskID == "124" {
+		staticURL = "/static/tasks/" + taskID + "/1.png"
+	}
 	conn.WriteJSON(map[string]interface{}{
 		"task_id":  taskID,
 		"progress": 100,
