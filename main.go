@@ -6,7 +6,6 @@ import (
 	"StoryToVideo-server/models"
 	"StoryToVideo-server/routers"
 	"StoryToVideo-server/service"
-	"context"
 )
 
 func main() {
@@ -15,9 +14,9 @@ func main() {
 	models.InitDB()
 	fmt.Println("Database initialized")
 
-	if err := service.InitQueue(); err != nil {
-        log.Fatal("Failed to initialize queue:", err)
-    }
+	service.InitQueue()
+	fmt.Println("Queue initialized")
+	
 	processor := service.NewProcessor(models.GormDB)
 	processor.StartProcessor(5)
 

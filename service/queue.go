@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+    "StoryToVideo-server/config"
 
 	"github.com/hibiken/asynq"
 )
@@ -20,10 +21,10 @@ type TaskPayload struct {
 var QueueClient *asynq.Client
 
 // InitQueue 初始化
-func InitQueue(redisAddr string, redisPassword string) {
+func InitQueue() {
     QueueClient = asynq.NewClient(asynq.RedisClientOpt{
-        Addr:     redisAddr,
-        Password: redisPassword,
+        Addr:     config.AppConfig.Redis.Addr,
+        Password: config.AppConfig.Redis.Password,
     })
 }
 

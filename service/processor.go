@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"StoryToVideo-server/config"
 	"StoryToVideo-server/models"
@@ -79,16 +80,18 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 	}
 
 	// 提取 Prompt (兼容不同任务类型)
-	if task.Type == models.TaskTypeShotGen {
-		if val, ok := task.Parameters["prompt"]; ok {
-			workerReq["prompt"] = val
-		}
-	} else {
-		// 分镜生成任务通常从 story_text 提取
-		if val, ok := task.Parameters["story_text"]; ok {
-			workerReq["prompt"] = val
+	if task.Type == models.TaskTypeShotGen || task.Type == "regenerate_shot"{
+		workerReq["prompt"] = task.Parameters.Shot.TextLLM
+		} else if task.Type == models.TaskTypeStoryboard {
+
+		var project models.Project
+		if err := p.DB.First(&project, "id = ?", task.ProjectId).Error; err == nil {
+			workerReq["prompt"] = project.StoryText
+		} else {
+			log.Printf("Warning: Could not fetch project for task %s to get story text", task.ID)
 		}
 	}
+
 
 	// 3. 调用 Python Worker
 	workerResp, err := p.callWorker(workerReq)
@@ -106,12 +109,12 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 
 	// 5. 根据任务类型处理结果
 	var processingErr error
-	if task.Type == models.TaskTypeShotGen {
-		// 单分镜生成/重绘
-		processingErr = p.handleShotUpdate(task.ShotID, workerResp.Result)
+	if task.Type == models.TaskTypeShotGen || task.Type == "regenerate_shot" {
+		// 修复：使用 ShotId (注意大小写)
+		processingErr = p.handleShotUpdate(task.ShotId, workerResp.Result)
 	} else if task.Type == models.TaskTypeStoryboard {
-		// 故事转分镜
-		if err := p.handleStoryboardCreation(task.ID, task.ProjectID, workerResp.Result); err != nil {
+		// 修复：使用 ProjectId (注意大小写)
+		if err := p.handleStoryboardCreation(task.ID, task.ProjectId, workerResp.Result); err != nil {
 			processingErr = fmt.Errorf("failed to create shots: %v", err)
 		}
 	}
@@ -156,7 +159,7 @@ func (p *Processor) handleStoryboardCreation(taskID string, projectID string, re
 
 		newShot := models.Shot{
 			ID:        uuid.NewString(),
-			ProjectID: projectID,
+			ProjectId: projectID,
 			Title:     ws.Title,
 			Description: ws.Description,
 			Prompt:    ws.Prompt,

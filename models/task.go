@@ -1,6 +1,17 @@
 package models
 
-import "time"
+import ("time"
+    "gorm.io/gorm")
+
+const (
+	TaskStatusPending    = "pending"
+	TaskStatusProcessing = "processing"
+	TaskStatusSuccess    = "finished" // 对应前端/WebSocket 检查的 finished 状态
+	TaskStatusFailed     = "failed"
+
+	TaskTypeShotGen    = "generate_shot"
+	TaskTypeStoryboard = "create_project"
+)
 
 type Task struct {
     ID               string         `gorm:"primaryKey;type:varchar(64)" json:"id"`
@@ -69,8 +80,9 @@ func (t *Task) UpdateStatus(db *gorm.DB, status string, result interface{}, errM
         "updated_at": time.Now(),
     }
     if result != nil {
-        jsonBytes, _ := json.Marshal(result)
-        updates["result"] = string(jsonBytes) 
+        //jsonBytes, _ := json.Marshal(result)
+        //updates["result"] = string(jsonBytes) 
+        updates["result"] = result
     }
     
     if errMsg != "" {
