@@ -9,12 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"testgin/config"
+	"StoryToVideo-server/config"
 
 	_ "github.com/go-sql-driver/mysql"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 var DB *sql.DB
+var GormDB *gorm.DB
 
 func InitDB() {
 	if config.AppConfig == nil {
@@ -34,7 +37,15 @@ func InitDB() {
 	}
 
 	DB = db
+	GormDB, err = gorm.Open(mysql.New(mysql.Config{
+		Conn: DB,
+	}), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("GORM 初始化失败: %v", err)
+	}
 
+	log.Println("数据库连接成功 (Native SQL + GORM)")
+	
 	// 自动建表（读取 doc/sql/StoryToVideo.sql）
 	b, err := ioutil.ReadFile("doc/sql/StoryToVideo.sql")
 	if err != nil {

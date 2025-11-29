@@ -18,6 +18,14 @@ type Config struct {
         ImageAPI string `yaml:"image_api"`
         VoiceAPI string `yaml:"voice_api"`
     } `yaml:"ai"`
+
+    Redis struct {
+        Addr     string `yaml:"addr"`
+        Password string `yaml:"password"`
+    } `yaml:"redis"`
+    Worker struct {
+        Addr string `yaml:"addr"` 
+    } `yaml:"worker"`
 }
 
 var AppConfig *Config
