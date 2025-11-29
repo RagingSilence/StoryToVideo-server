@@ -66,3 +66,14 @@ func TaskProgressWebSocket(c *gin.Context) {
 		}
 	}
 }
+
+// 查询任务状态：GET /v1/api/tasks/:task_id
+func GetTaskStatus(c *gin.Context) {
+	taskID := c.Param("task_id")
+	t, err := models.GetTaskByID(taskID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": t})
+}

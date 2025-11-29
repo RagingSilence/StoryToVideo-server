@@ -15,7 +15,7 @@ func InitRouter() *gin.Engine {
 		v1.GET("/projects/:project_id", api.GetProject)
 		v1.PUT("/projects/:project_id", api.UpdateProject)
 		v1.DELETE("/projects/:project_id", api.DeleteProject)
-
+		v1.GET("/tasks/:task_id", api.GetTaskStatus)
 		//v1.POST("/projects/:project_id/shots", api.CreateShot)
 		v1.POST("/projects/:project_id/shots/:shot_id", api.UpdateShot)
 		v1.GET("/projects/:project_id/shots", api.GetShots)
