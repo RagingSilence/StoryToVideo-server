@@ -1,6 +1,9 @@
+// ...existing code...
 package api
 
 import (
+	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -8,7 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-)
+) //119.45.124.222 //localhost
 
 // 创建项目
 func CreateProject(c *gin.Context) {
@@ -38,16 +41,43 @@ func CreateProject(c *gin.Context) {
 		UpdatedAt:   time.Now(),
 	}
 
-	// TODO: 持久化到数据库
+	// 持久化到数据库
+	if err := models.CreateProject(&project); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建项目失败: " + err.Error()})
+		return
+	}
 
 	// 创建任务（示例，实际逻辑可根据业务调整）
-	taskID := uuid.NewString()
-	status := "pending"
+	task := models.Task{
+		ID:        uuid.NewString(),
+		ProjectId: project.ID,
+		ShotId:    "",
+		Type:      "create_project",
+		Status:    "pending",
+		Progress:  0,
+		Message:   "项目创建任务已创建",
+		Parameters: models.TaskParameters{
+			Shot:  models.TaskShotParameters{},
+			Video: models.TaskVideoParameters{},
+		},
+		Result:            models.TaskResult{},
+		Error:             "",
+		EstimatedDuration: 0,
+		StartedAt:         time.Time{},
+		FinishedAt:        time.Time{},
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+
+	if err := models.CreateTask(&task); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"ProjectID": project.ID,
-		"TaskID":    taskID,
-		"Status":    status,
+		"TaskID":    task.ID,
+		"Status":    task.Status,
 	})
 }
 
@@ -55,23 +85,69 @@ func CreateProject(c *gin.Context) {
 func GetProject(c *gin.Context) {
 	projectID := c.Param("project_id")
 
-	// TODO: 从数据库获取项目、分镜、最近任务
-	project := models.Project{
-		ID:          projectID,
-		Title:       "示例标题",
-		StoryText:   "示例故事",
-		Style:       "示例风格",
-		Status:      "created",
-		CoverImage:  "",
-		Duration:    0,
-		VideoUrl:    "",
-		Description: "",
-		ShotCount:   0,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+	// 从数据库获取项目
+	project, err := models.GetProjectByID(projectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "项目未找到: " + err.Error()})
+		return
 	}
-	shots := []models.Shot{}
-	recentTask := struct{}{}
+
+	// 获取分镜列表
+	shots, err := models.GetShotsByProjectID(projectID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取分镜失败: " + err.Error()})
+		return
+	}
+
+	// 获取最近任务（如果有）
+	var recentTask *models.Task
+	row := models.DB.QueryRow(`SELECT id, project_id, shot_id, type, status, progress, message, parameters, result, error, estimated_duration, started_at, finished_at, created_at, updated_at FROM task WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`, projectID)
+	var t models.Task
+	var paramsBytes, resultBytes []byte
+	var startedAt, finishedAt, createdAt, updatedAt sql.NullTime
+	var shotIDNull sql.NullString
+	var messageNull sql.NullString
+	var errorNull sql.NullString
+
+	if err := row.Scan(&t.ID, &t.ProjectId, &shotIDNull, &t.Type, &t.Status, &t.Progress, &messageNull, &paramsBytes, &resultBytes, &errorNull, &t.EstimatedDuration, &startedAt, &finishedAt, &createdAt, &updatedAt); err != nil {
+		if err != sql.ErrNoRows {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询最近任务失败: " + err.Error()})
+			return
+		}
+		// 没有任务，recentTask 保持 nil
+	} else {
+		if shotIDNull.Valid {
+			t.ShotId = shotIDNull.String
+		} else {
+			t.ShotId = ""
+		}
+		if messageNull.Valid {
+			t.Message = messageNull.String
+		} else {
+			t.Message = ""
+		}
+		if errorNull.Valid {
+			t.Error = errorNull.String
+		} else {
+			t.Error = ""
+		}
+		// 反序列化 parameters/result
+		_ = json.Unmarshal(paramsBytes, &t.Parameters)
+		_ = json.Unmarshal(resultBytes, &t.Result)
+		if startedAt.Valid {
+			t.StartedAt = startedAt.Time
+		}
+		if finishedAt.Valid {
+			t.FinishedAt = finishedAt.Time
+		}
+		if createdAt.Valid {
+			t.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			t.UpdatedAt = updatedAt.Time
+		}
+		recentTask = &t
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"project_detail": project,
@@ -92,20 +168,37 @@ func UpdateProject(c *gin.Context) {
 		return
 	}
 
-	// TODO: 数据库更新项目
-	updateAt := time.Now()
+	// 数据库更新项目
+	if err := models.UpdateProjectByID(projectID, req.Title, req.Description); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新项目失败: " + err.Error()})
+		return
+	}
+
+	updatedProject, err := models.GetProjectByID(projectID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"id":       projectID,
+			"updateAT": time.Now(),
+		})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":       projectID,
-		"updateAT": updateAt,
+		"project":  updatedProject,
+		"updateAT": updatedProject.UpdatedAt,
 	})
 }
 
 // 删除项目
 func DeleteProject(c *gin.Context) {
-	//projectID := c.Param("project_id")
+	projectID := c.Param("project_id")
 
-	// TODO: 数据库删除项目
+	// 数据库删除项目（级联会删除相关分镜和任务）
+	if err := models.DeleteProjectByID(projectID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除项目失败: " + err.Error()})
+		return
+	}
+
 	deleteAt := time.Now()
 
 	c.JSON(http.StatusOK, gin.H{
@@ -114,3 +207,5 @@ func DeleteProject(c *gin.Context) {
 		"message":  "项目已删除",
 	})
 }
+
+// ...existing code...

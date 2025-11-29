@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	"testgin/models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -14,7 +16,8 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// 任务进度 WebSocket 推送
+// 任务进度 WebSocket 推送（改为以数据库为来源：先读取 DB，然后循环轮询 DB 并推送）
+// 外部服务轮询并写回 DB 的逻辑应由后台协程/任务执行器负责，这里只订阅并推送 DB 中的最新数据。
 func TaskProgressWebSocket(c *gin.Context) {
 	taskID := c.Param("task_id")
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -24,29 +27,42 @@ func TaskProgressWebSocket(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// 示例：每秒推送一次进度
-	for progress := 0; progress <= 100; progress += 30 {
-		msg := map[string]interface{}{
-			"task_id":  taskID,
-			"progress": progress,
-			"status":   "running",
-			"message":  "任务进行中",
+	// 先从 DB 读取当前任务状态并推送
+	t, err := models.GetTaskByID(taskID)
+	if err != nil {
+		// 若任务不存在，仍可保持连接并等待任务被创建/更新，或直接返回错误
+		conn.WriteJSON(map[string]interface{}{"error": "task not found: " + err.Error()})
+		return
+	}
+	_ = conn.WriteJSON(t)
+
+	// 轮询 DB 并推送差异（简单实现：每秒查询一次直到状态为 finished）
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	prevStatus := t.Status
+	prevProgress := t.Progress
+
+	for range ticker.C {
+		cur, err := models.GetTaskByID(taskID)
+		if err != nil {
+			// 若查询失败，继续重试；也可以选择断开连接
+			continue
 		}
-		if err := conn.WriteJSON(msg); err != nil {
+
+		// 若状态/进度等有变化则推送
+		if cur.Status != prevStatus || cur.Progress != prevProgress {
+			if err := conn.WriteJSON(cur); err != nil {
+				break
+			}
+			prevStatus = cur.Status
+			prevProgress = cur.Progress
+		}
+
+		if cur.Status == "finished" || cur.Status == "failed" {
+			// 发送最终状态后关闭连接
+			_ = conn.WriteJSON(cur)
 			break
 		}
-		time.Sleep(time.Second)
 	}
-	// 任务完成推送
-	staticURL := "/static/tasks/" + taskID + "/result.mp4"
-	if taskID == "124" {
-		staticURL = "/static/tasks/" + taskID + "/1.png"
-	}
-	conn.WriteJSON(map[string]interface{}{
-		"task_id":  taskID,
-		"progress": 100,
-		"status":   "finished",
-		"url":      staticURL,
-		"message":  "任务已完成",
-	})
 }

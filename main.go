@@ -1,12 +1,17 @@
 package main
 
 import (
-    "testgin/config"
-    "testgin/routers"
+	"fmt"
+	"testgin/config"
+	"testgin/models"
+	"testgin/routers"
 )
 
 func main() {
-    config.InitConfig()
-    r := routers.InitRouter()
-    r.Run(config.AppConfig.Server.Port)
+	config.InitConfig()
+	fmt.Println("Server starting on port", config.AppConfig.Server.Port)
+	models.InitDB()
+	fmt.Println("Database initialized")
+	r := routers.InitRouter()
+	r.Run(config.AppConfig.Server.Port)
 }
