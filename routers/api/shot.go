@@ -1,6 +1,8 @@
+// ...existing code...
 package api
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -28,97 +30,15 @@ func GetShots(c *gin.Context) {
 	})
 }
 
-// 生成分镜
-// func CreateShot(c *gin.Context) {
-//     projectID := c.Param("project_id")
-//     var req struct {
-//         Title      string `form:"title"`
-//         Prompt     string `form:"prompt"`
-//         Transition string `form:"transition"`
-//     }
-//     if err := c.ShouldBindQuery(&req); err != nil {
-//         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-//         return
-//     }
-
-//     // 计算顺序（简单方式：读取当前分镜数量）
-//     existingShots, err := models.GetShotsByProjectID(projectID)
-//     if err != nil {
-//         c.JSON(http.StatusInternalServerError, gin.H{"error": "读取分镜信息失败: " + err.Error()})
-//         return
-//     }
-//     order := len(existingShots) + 1
-
-//     shot := models.Shot{
-//         ID:          uuid.NewString(),
-//         ProjectId:   projectID,
-//         Order:       order,
-//         Title:       req.Title,
-//         Description: "",
-//         Prompt:      req.Prompt,
-//         Status:      "created",
-//         ImagePath:   "",
-//         AudioPath:   "",
-//         Transition:  req.Transition,
-//         CreatedAt:   time.Now(),
-//         UpdatedAt:   time.Now(),
-//     }
-
-//     // 持久化到数据库
-//     if err := models.CreateShot(&shot); err != nil {
-//         c.JSON(http.StatusInternalServerError, gin.H{"error": "创建分镜失败: " + err.Error()})
-//         return
-//     }
-
-//     // 为该分镜创建生成任务
-//     task := models.Task{
-//         ID:        uuid.NewString(),
-//         ProjectId: projectID,
-//         ShotId:    shot.ID,
-//         Type:      "generate_shot",
-//         Status:    "pending",
-//         Progress:  0,
-//         Message:   "分镜生成任务已创建",
-//         Parameters: models.TaskParameters{
-//             Shot: models.TaskShotParameters{
-//                 Style:       "",              // 可根据业务填充
-//                 TextLLM:     shot.Prompt,
-//                 ImageLLM:    "",
-//                 GenerateTTS: false,
-//                 ShotCount:   1,
-//                 ImageWidth:  1024,
-//                 ImageHeight: 1024,
-//             },
-//             Video: models.TaskVideoParameters{},
-//         },
-//         Result:            models.TaskResult{},
-//         Error:             "",
-//         EstimatedDuration: 0,
-//         StartedAt:         time.Time{},
-//         FinishedAt:        time.Time{},
-//         CreatedAt:         time.Now(),
-//         UpdatedAt:         time.Now(),
-//     }
-
-//     if err := models.CreateTask(&task); err != nil {
-//         c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
-//         return
-//     }
-
-//	    c.JSON(http.StatusOK, gin.H{
-//	        "shot_id": shot.ID,
-//	        "task_id": task.ID,
-//	        "message": "分镜生成任务已创建",
-//	    })
-//	}
+// 更新分镜并可触发重生任务（改为使用新 TaskType）
 func UpdateShot(c *gin.Context) {
 	projectID := c.Param("project_id")
 	shotID := c.Param("shot_id")
 
 	var req struct {
-		Title      string `form:"title"`
-		Prompt     string `form:"prompt"`
-		Transition string `form:"transition"`
+		Title      string `form:"title" json:"title"`
+		Prompt     string `form:"prompt" json:"prompt"`
+		Transition string `form:"transition" json:"transition"`
 	}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -137,26 +57,24 @@ func UpdateShot(c *gin.Context) {
 		return
 	}
 
-	// 创建重新生成分镜的任务（示例：type 为 regenerate_shot）
+	// 创建重新生成分镜的任务（使用 models.TaskTypeShotImage）
+	// Prompt 优先使用请求中的值，否则使用数据库中已有值（调用方已确保存在）
+	prompt := req.Prompt
+
 	task := models.Task{
 		ID:        uuid.NewString(),
 		ProjectId: projectID,
-		ShotId:    shotID,
-		Type:      "regenerate_shot",
-		Status:    "pending",
+		Type:      models.TaskTypeShotImage,
+		Status:    models.TaskStatusPending,
 		Progress:  0,
 		Message:   "分镜更新并已创建生成任务",
 		Parameters: models.TaskParameters{
 			Shot: models.TaskShotParameters{
-				Style:       "", // 可按需填充
-				TextLLM:     req.Prompt,
-				ImageLLM:    "",
-				GenerateTTS: false,
-				ShotCount:   1,
+				ShotId:      shotID,
+				Prompt:      prompt,
 				ImageWidth:  1024,
 				ImageHeight: 1024,
 			},
-			Video: models.TaskVideoParameters{},
 		},
 		Result:            models.TaskResult{},
 		Error:             "",
@@ -173,9 +91,9 @@ func UpdateShot(c *gin.Context) {
 	}
 
 	if err := service.EnqueueTask(task.ID); err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue task"})
-        return
-    }
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "任务入队失败"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"shot_id": shotID,
@@ -223,19 +141,43 @@ func DeleteShot(c *gin.Context) {
 		"shot_id":    shotID,
 		"project_id": projectID,
 	})
-
 }
 
-// 视频生成
+// 触发整片视频生成任务（创建 task 并入队）
 func GenerateShotVideo(c *gin.Context) {
 	projectID := c.Param("project_id")
-	// TODO: 触发视频生成任务（可在此处创建 Task 并持久化）
+
+	task := models.Task{
+		ID:        uuid.NewString(),
+		ProjectId: projectID,
+		Type:      models.TaskTypeProjectVideo,
+		Status:    models.TaskStatusPending,
+		Progress:  0,
+		Message:   "项目视频生成任务已创建",
+		Parameters: models.TaskParameters{
+			Video: models.VideoParameters{}, // 可由请求或 project 默认覆盖
+		},
+		Result:            models.TaskResult{},
+		Error:             "",
+		EstimatedDuration: 0,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+
+	if err := models.CreateTask(&task); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建视频任务失败: " + err.Error()})
+		return
+	}
+
+	if err := service.EnqueueTask(task.ID); err != nil {
+		log.Printf("视频任务入队失败: %v", err)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "视频生成任务已创建",
 		"project_id": projectID,
-		"task_id":    uuid.NewString(), // TODO: 实际任务ID
+		"task_id":    task.ID,
 	})
-
 }
 
 // ...existing code...

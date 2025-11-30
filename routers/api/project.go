@@ -4,28 +4,34 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
-	"log"
 
 	"StoryToVideo-server/models"
 
+	"StoryToVideo-server/service"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"StoryToVideo-server/service"
 ) //119.45.124.222 //localhost
 
 // 创建项目
 func CreateProject(c *gin.Context) {
 	var req struct {
-		Title       string `form:"Title"`
-		StoryText   string `form:"StoryText"`
-		Style       string `form:"Style"`
-		Description string `form:"Description"`
+		Title     string `form:"Title" json:"title"`
+		StoryText string `form:"StoryText" json:"story_text"`
+		Style     string `form:"Style" json:"style"`
+		ShotCount int    `form:"ShotCount" json:"shot_count"`
 	}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 默认分镜数量
+	if req.ShotCount <= 0 {
+		req.ShotCount = 5
 	}
 
 	project := models.Project{
@@ -33,34 +39,36 @@ func CreateProject(c *gin.Context) {
 		Title:       req.Title,
 		StoryText:   req.StoryText,
 		Style:       req.Style,
-		Description: req.Description,
 		Status:      "created",
 		CoverImage:  "",
 		Duration:    0,
 		VideoUrl:    "",
-		ShotCount:   0,
+		Description: "",
+		ShotCount:   req.ShotCount,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
 
-	// 持久化到数据库
+	// 1) 插入 project 到 DB
 	if err := models.CreateProject(&project); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建项目失败: " + err.Error()})
 		return
 	}
 
-	// 创建任务（示例，实际逻辑可根据业务调整）
-	task := models.Task{
+	// 2) 创建项目文本生成任务（project_text）
+	textTask := models.Task{
 		ID:        uuid.NewString(),
 		ProjectId: project.ID,
-		ShotId:    "",
-		Type:      "create_project",
-		Status:    "pending",
+		Type:      models.TaskTypeProjectText,
+		Status:    models.TaskStatusPending,
 		Progress:  0,
-		Message:   "项目创建任务已创建",
+		Message:   "项目文本生成任务已创建",
 		Parameters: models.TaskParameters{
-			Shot:  models.TaskShotParameters{},
-			Video: models.TaskVideoParameters{},
+			ShotDefaults: models.ShotGenerationParameters{
+				ShotCount: req.ShotCount,
+				Style:     req.Style,
+				StoryText: req.StoryText,
+			},
 		},
 		Result:            models.TaskResult{},
 		Error:             "",
@@ -71,19 +79,53 @@ func CreateProject(c *gin.Context) {
 		UpdatedAt:         time.Now(),
 	}
 
-	if err := models.CreateTask(&task); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
+	if err := models.CreateTask(&textTask); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文本任务失败: " + err.Error()})
 		return
 	}
-	if err := service.EnqueueTask(task.ID); err != nil {
-        log.Printf("任务入队失败: %v", err)
+	// 将文本任务入队执行
+	if err := service.EnqueueTask(textTask.ID); err != nil {
+		log.Printf("文本任务入队失败: %v", err)
 	}
-	
+
+	// 3) 创建 n 个分镜图片生成任务，状态为 blocked，并设置依赖为 textTask.ID
+	var shotTaskIDs []string
+	for i := 0; i < req.ShotCount; i++ {
+		shotTask := models.Task{
+			ID:        uuid.NewString(),
+			ProjectId: project.ID,
+			Type:      models.TaskTypeShotImage,
+			Status:    models.TaskStatusBlocked,
+			Progress:  0,
+			Message:   "等待文本任务完成以生成分镜图片",
+			Parameters: models.TaskParameters{
+				Shot: models.TaskShotParameters{
+					// ShotId / Prompt 在文本完成后会由处理器/worker 填充或由客户端获取资源后填充
+					Prompt:      "",
+					Transition:  "",
+					ImageWidth:  1024,
+					ImageHeight: 1024,
+				},
+				DependsOn: textTask.ID,
+			},
+			Result:            models.TaskResult{},
+			Error:             "",
+			EstimatedDuration: 0,
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
+		}
+		if err := models.CreateTask(&shotTask); err != nil {
+			log.Printf("创建分镜任务失败: %v", err)
+			continue
+		}
+		shotTaskIDs = append(shotTaskIDs, shotTask.ID)
+		// 不入队，等待依赖解锁 (文本任务完成后由 watcher 或处理器解锁并入队)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"ProjectID": project.ID,
-		"TaskID":    task.ID,
-		"Status":    task.Status,
+		"project_id":    project.ID,
+		"text_task_id":  textTask.ID,
+		"shot_task_ids": shotTaskIDs,
 	})
 }
 
@@ -122,11 +164,6 @@ func GetProject(c *gin.Context) {
 		}
 		// 没有任务，recentTask 保持 nil
 	} else {
-		if shotIDNull.Valid {
-			t.ShotId = shotIDNull.String
-		} else {
-			t.ShotId = ""
-		}
 		if messageNull.Valid {
 			t.Message = messageNull.String
 		} else {

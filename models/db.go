@@ -1,3 +1,4 @@
+// ...existing code...
 package models
 
 import (
@@ -45,7 +46,7 @@ func InitDB() {
 	}
 
 	log.Println("数据库连接成功 (Native SQL + GORM)")
-	
+
 	// 自动建表（读取 doc/sql/StoryToVideo.sql）
 	b, err := ioutil.ReadFile("doc/sql/StoryToVideo.sql")
 	if err != nil {
@@ -105,15 +106,15 @@ func CreateShot(s *Shot) error {
 	s.CreatedAt = now
 	s.UpdatedAt = now
 	_, err := DB.Exec(
-		`INSERT INTO shot (id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, audio_path, transition, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.ProjectId, s.Order, s.Title, s.Description, s.Prompt, s.Status, s.ImagePath, s.AudioPath, s.Transition, s.CreatedAt, s.UpdatedAt,
+		`INSERT INTO shot (id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, transition, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.ProjectId, s.Order, s.Title, s.Description, s.Prompt, s.Status, s.ImagePath, s.Transition, s.CreatedAt, s.UpdatedAt,
 	)
 	return err
 }
 
 func GetShotsByProjectID(projectID string) ([]Shot, error) {
-	rows, err := DB.Query(`SELECT id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, audio_path, transition, created_at, updated_at FROM shot WHERE project_id = ? ORDER BY `+"`order`"+` ASC`, projectID)
+	rows, err := DB.Query(`SELECT id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, transition, created_at, updated_at FROM shot WHERE project_id = ? ORDER BY `+"`order`"+` ASC`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +123,7 @@ func GetShotsByProjectID(projectID string) ([]Shot, error) {
 	for rows.Next() {
 		var s Shot
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&s.ID, &s.ProjectId, &s.Order, &s.Title, &s.Description, &s.Prompt, &s.Status, &s.ImagePath, &s.AudioPath, &s.Transition, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.ProjectId, &s.Order, &s.Title, &s.Description, &s.Prompt, &s.Status, &s.ImagePath, &s.Transition, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		s.CreatedAt = createdAt
@@ -134,9 +135,9 @@ func GetShotsByProjectID(projectID string) ([]Shot, error) {
 
 func GetShotByID(projectID, shotID string) (Shot, error) {
 	var s Shot
-	row := DB.QueryRow(`SELECT id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, audio_path, transition, created_at, updated_at FROM shot WHERE id = ? AND project_id = ?`, shotID, projectID)
+	row := DB.QueryRow(`SELECT id, project_id, `+"`order`"+`, title, description, prompt, status, image_path, transition, created_at, updated_at FROM shot WHERE id = ? AND project_id = ?`, shotID, projectID)
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&s.ID, &s.ProjectId, &s.Order, &s.Title, &s.Description, &s.Prompt, &s.Status, &s.ImagePath, &s.AudioPath, &s.Transition, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.ProjectId, &s.Order, &s.Title, &s.Description, &s.Prompt, &s.Status, &s.ImagePath, &s.Transition, &createdAt, &updatedAt); err != nil {
 		return s, err
 	}
 	s.CreatedAt = createdAt
@@ -158,14 +159,6 @@ func CreateTask(t *Task) error {
 	params, _ := json.Marshal(t.Parameters)
 	result, _ := json.Marshal(t.Result)
 
-	// 如果 ShotId 为空字符串，传 nil 以在数据库中写入 NULL，避免外键约束错误
-	var shotIdParam interface{}
-	if t.ShotId == "" {
-		shotIdParam = nil
-	} else {
-		shotIdParam = t.ShotId
-	}
-
 	// started_at / finished_at 如果是零值则传 nil
 	var startedAtParam interface{}
 	if t.StartedAt.IsZero() {
@@ -180,12 +173,14 @@ func CreateTask(t *Task) error {
 		finishedAtParam = t.FinishedAt
 	}
 
-	_, err := DB.Exec(`INSERT INTO task (id, project_id, shot_id, type, status, progress, message, parameters, result, error, estimated_duration, started_at, finished_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectId, shotIdParam, t.Type, t.Status, t.Progress, t.Message, params, result, t.Error, t.EstimatedDuration, startedAtParam, finishedAtParam, t.CreatedAt, t.UpdatedAt,
+	// NOTE: 不显式写入 shot_id 列（保持 NULL），INSERT 列数与占位符对齐
+	_, err := DB.Exec(`INSERT INTO task (id, project_id, type, status, progress, message, parameters, result, error, estimated_duration, started_at, finished_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectId, t.Type, t.Status, t.Progress, t.Message, params, result, t.Error, t.EstimatedDuration, startedAtParam, finishedAtParam, t.CreatedAt, t.UpdatedAt,
 	)
 	return err
 }
+
 func UpdateShotByID(projectID, shotID, title, prompt, transition string) error {
 	// 动态构建更新字段，只更新非空值
 	sets := []string{}
@@ -212,8 +207,10 @@ func UpdateShotByID(projectID, shotID, title, prompt, transition string) error {
 	_, err := DB.Exec(query, args...)
 	return err
 }
+
 func GetTaskByID(id string) (Task, error) {
 	var t Task
+	// 注意：这里 SELECT 包含 shot_id，以便与下方 Scan 的参数顺序一致（routers/api/project.go 也按此顺序查询）
 	row := DB.QueryRow(`SELECT id, project_id, shot_id, type, status, progress, message, parameters, result, error, estimated_duration, started_at, finished_at, created_at, updated_at FROM task WHERE id = ?`, id)
 
 	var paramsBytes, resultBytes []byte
@@ -222,16 +219,11 @@ func GetTaskByID(id string) (Task, error) {
 	var messageNull sql.NullString
 	var errorNull sql.NullString
 
-	// 注意：使用 sql.NullString 来接收可能为 NULL 的字符串列
 	if err := row.Scan(&t.ID, &t.ProjectId, &shotIDNull, &t.Type, &t.Status, &t.Progress, &messageNull, &paramsBytes, &resultBytes, &errorNull, &t.EstimatedDuration, &startedAt, &finishedAt, &createdAt, &updatedAt); err != nil {
 		return t, err
 	}
 
-	if shotIDNull.Valid {
-		t.ShotId = shotIDNull.String
-	} else {
-		t.ShotId = ""
-	}
+	// shot_id 现在存于 shotIDNull，如果需要可以由调用方解析并使用 t.Parameters.Shot.ShotId 或其它字段来关联
 	if messageNull.Valid {
 		t.Message = messageNull.String
 	} else {
