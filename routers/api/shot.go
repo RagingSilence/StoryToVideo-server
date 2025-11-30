@@ -1,11 +1,11 @@
-// ...existing code...
 package api
 
 import (
 	"net/http"
 	"time"
 
-	"testgin/models"
+	"StoryToVideo-server/models"
+	"StoryToVideo-server/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -171,6 +171,11 @@ func UpdateShot(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
 		return
 	}
+
+	if err := service.EnqueueTask(task.ID); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue task"})
+        return
+    }
 
 	c.JSON(http.StatusOK, gin.H{
 		"shot_id": shotID,

@@ -5,3 +5,12 @@ mysql:
 ai:
   image_api: "http://ai-image-service/api/generate"
   voice_api: "http://ai-voice-service/api/generate"
+
+redis:
+  addr: "127.0.0.1:6379"  
+  password: ""            
+  db: 0                   
+
+worker:
+  addr: "http://127.0.0.1:6000/generate"
+  timeout_minutes: 20 

@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"testgin/config"
-	"testgin/models"
-	"testgin/routers"
+	"StoryToVideo-server/config"
+	"StoryToVideo-server/models"
+	"StoryToVideo-server/routers"
+	"StoryToVideo-server/service"
 )
 
 func main() {
@@ -12,6 +13,13 @@ func main() {
 	fmt.Println("Server starting on port", config.AppConfig.Server.Port)
 	models.InitDB()
 	fmt.Println("Database initialized")
+
+	service.InitQueue()
+	fmt.Println("Queue initialized")
+	
+	processor := service.NewProcessor(models.GormDB)
+	processor.StartProcessor(5)
+
 	r := routers.InitRouter()
 	r.Run(config.AppConfig.Server.Port)
 }

@@ -1,6 +1,17 @@
 package models
 
-import "time"
+import ("time"
+    "gorm.io/gorm")
+
+const (
+	TaskStatusPending    = "pending"
+	TaskStatusProcessing = "processing"
+	TaskStatusSuccess    = "finished" // 对应前端/WebSocket 检查的 finished 状态
+	TaskStatusFailed     = "failed"
+
+	TaskTypeShotGen    = "generate_shot"
+	TaskTypeStoryboard = "create_project"
+)
 
 type Task struct {
     ID               string         `gorm:"primaryKey;type:varchar(64)" json:"id"`
@@ -19,6 +30,7 @@ type Task struct {
     CreatedAt        time.Time      `json:"createdAt"`
     UpdatedAt        time.Time      `json:"updatedAt"`
 }
+
 
 type TaskParameters struct {
     Shot  TaskShotParameters  `json:"shot"`
@@ -60,4 +72,29 @@ type TaskVideoResult struct {
     Resolution string `json:"resolution"`
     Format    string `json:"format"`
     TotalTime string `json:"total_time"`
+}
+
+func (t *Task) UpdateStatus(db *gorm.DB, status string, result interface{}, errMsg string) error {
+    updates := map[string]interface{}{
+        "status":     status,
+        "updated_at": time.Now(),
+    }
+    if result != nil {
+        //jsonBytes, _ := json.Marshal(result)
+        //updates["result"] = string(jsonBytes) 
+        updates["result"] = result
+    }
+    
+    if errMsg != "" {
+        updates["error"] = errMsg
+    }
+    return db.Model(t).Updates(updates).Error
+}
+
+func GetTaskByIDGorm(db *gorm.DB, taskID string) (*Task, error) {
+    var task Task
+    if err := db.First(&task, "id = ?", taskID).Error; err != nil {
+        return nil, err
+    }
+    return &task, nil
 }

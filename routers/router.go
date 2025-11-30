@@ -1,7 +1,7 @@
 package routers
 
 import (
-	"testgin/routers/api"
+	"StoryToVideo-server/routers/api"
 
 	"github.com/gin-gonic/gin"
 )

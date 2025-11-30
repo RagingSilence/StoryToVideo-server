@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"testgin/models"
+	"StoryToVideo-server/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"

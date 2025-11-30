@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+	"log"
 
-	"testgin/models"
+	"StoryToVideo-server/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"StoryToVideo-server/service"
 ) //119.45.124.222 //localhost
 
 // 创建项目
@@ -73,6 +75,10 @@ func CreateProject(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
 		return
 	}
+	if err := service.EnqueueTask(task.ID); err != nil {
+        log.Printf("任务入队失败: %v", err)
+	}
+	
 
 	c.JSON(http.StatusOK, gin.H{
 		"ProjectID": project.ID,
