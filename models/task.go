@@ -99,7 +99,7 @@ type VideoParameters struct {
 type TaskResult struct {
 	ResourceType string `json:"resource_type,omitempty"` // "project","shot","video","audio"
 	ResourceID   string `json:"resource_id,omitempty"`   // 对应资源 id（由资源 API 提供详细信息）
-	ResourceURL  string `json:"resource_url,omitempty"`  // 可选直接访问的 URL（若系统直接提供）
+	ResourceURL  string `json:"c,omitempty"`  // 可选直接访问的 URL（若系统直接提供）
 }
 
 // ...existing code...
