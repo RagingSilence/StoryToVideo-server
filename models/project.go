@@ -16,3 +16,7 @@ type Project struct {
     CreatedAt  time.Time `json:"createdAt"`
     UpdatedAt  time.Time `json:"updatedAt"`
 }
+
+func (Project) TableName() string {
+    return "project"
+}

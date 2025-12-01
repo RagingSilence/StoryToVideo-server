@@ -17,6 +17,9 @@ func main() {
 	service.InitQueue()
 	fmt.Println("Queue initialized")
 	
+	service.InitMinIO()
+	fmt.Println("MinIO initialized")
+	
 	processor := service.NewProcessor(models.GormDB)
 	processor.StartProcessor(5)
 

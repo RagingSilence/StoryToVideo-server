@@ -21,6 +21,7 @@ func GetShots(c *gin.Context) {
 		return
 	}
 
+
 	c.JSON(http.StatusOK, gin.H{
 		"shots":       shots,
 		"project_id":  projectID,
@@ -147,16 +148,15 @@ func UpdateShot(c *gin.Context) {
 		Progress:  0,
 		Message:   "分镜更新并已创建生成任务",
 		Parameters: models.TaskParameters{
-			Shot: models.TaskShotParameters{
+			Shot: &models.ShotParams{
 				Style:       "", // 可按需填充
-				TextLLM:     req.Prompt,
+				Prompt:     req.Prompt,
 				ImageLLM:    "",
 				GenerateTTS: false,
-				ShotCount:   1,
-				ImageWidth:  1024,
-				ImageHeight: 1024,
+				ImageWidth:  "1024",
+				ImageHeight: "1024",
 			},
-			Video: models.TaskVideoParameters{},
+			Video: &models.VideoParams{},
 		},
 		Result:            models.TaskResult{},
 		Error:             "",
@@ -195,6 +195,7 @@ func GetShotDetail(c *gin.Context) {
 		return
 	}
 
+
 	c.JSON(http.StatusOK, gin.H{
 		"shot": shot,
 	})
@@ -229,13 +230,57 @@ func DeleteShot(c *gin.Context) {
 // 视频生成
 func GenerateShotVideo(c *gin.Context) {
 	projectID := c.Param("project_id")
-	// TODO: 触发视频生成任务（可在此处创建 Task 并持久化）
+    
+    var req struct {
+        ShotID string `json:"shot_id" form:"shot_id"`
+        FPS    int    `json:"fps" form:"fps"`
+    }
+    // 允许从 Query 或 Body 绑定
+    if err := c.ShouldBind(&req); err != nil {
+    }
+
+    if req.ShotID == "" {
+         c.JSON(http.StatusBadRequest, gin.H{"error": "shot_id is required"})
+         return
+    }
+
+	// 1. 创建任务对象
+	task := models.Task{
+		ID:        uuid.NewString(),
+		ProjectId: projectID,
+		ShotId:    req.ShotID,
+		Type:      "generate_video", // 对应 TaskType
+		Status:    models.TaskStatusPending,
+		Progress:  0,
+		Message:   "视频生成任务排队中",
+		Parameters: models.TaskParameters{
+			Video: &models.VideoParams{
+				FPS:        req.FPS, // 默认值或从 req 获取
+				Resolution: "1280x720",
+			},
+            // 确保 Shot 参数初始化，防止 json 序列化 nil
+            Shot: &models.ShotParams{}, 
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	// 2. 存入数据库
+	if err := models.CreateTask(&task); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败: " + err.Error()})
+		return
+	}
+
+	// 3. 推送到 Redis 队列
+	if err := service.EnqueueTask(task.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "任务入队失败"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "视频生成任务已创建",
 		"project_id": projectID,
-		"task_id":    uuid.NewString(), // TODO: 实际任务ID
+		"shot_id":    req.ShotID,
+		"task_id":    task.ID,
 	})
-
 }
-
-// ...existing code...

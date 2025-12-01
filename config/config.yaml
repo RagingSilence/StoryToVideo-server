@@ -12,5 +12,12 @@ redis:
   db: 0                   
 
 worker:
-  addr: "http://127.0.0.1:6000/generate"
+  addr: "http://127.0.0.1:6000"
   timeout_minutes: 20 
+minio:
+    endpoint: "http://119.45.124.222:9000"  # MinIO 的地址
+    access_key: "story2video"
+    secret_key: "s2v_secret"
+    bucket: "story2video"      # 存放视频的桶名
+    use_ssl: false              # 本地 docker 通常是 false，线上 TOS 可能是 true
+    domain: "http://127.0.0.1:9001" # 用于拼接对外访问的 URL

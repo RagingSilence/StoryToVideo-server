@@ -19,6 +19,7 @@ type Shot struct {
     ImagePath   string    `json:"imagePath"`
     AudioPath   string    `json:"audioPath"`
     Transition  string    `json:"transition"`
+    VideoUrl    string    `json:"videoUrl"`
     CreatedAt   time.Time `json:"createdAt"`
     UpdatedAt   time.Time `json:"updatedAt"`
 }
@@ -46,4 +47,8 @@ func GetShotByIDGorm(db *gorm.DB, shotID string) (*Shot, error) {
         return nil, err
     }
     return &shot, nil
+}
+
+func (Shot) TableName() string {
+    return "shot"
 }
