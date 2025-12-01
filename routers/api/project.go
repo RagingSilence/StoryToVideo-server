@@ -59,16 +59,20 @@ func CreateProject(c *gin.Context) {
 	textTask := models.Task{
 		ID:        uuid.NewString(),
 		ProjectId: project.ID,
-		Type:      models.TaskTypeProjectText,
-		Status:    models.TaskStatusPending,
+		ShotId:    "",
+		Type:      models.TaskTypeStoryboard,
+		Status:     models.TaskStatusPending,
 		Progress:  0,
-		Message:   "项目文本生成任务已创建",
+		Message:   "项目创建任务已创建,正在生成分镜脚本...",
 		Parameters: models.TaskParameters{
-			ShotDefaults: models.ShotGenerationParameters{
+			ShotDefaults: &models.ShotDefaultsParams{
 				ShotCount: req.ShotCount,
 				Style:     req.Style,
 				StoryText: req.StoryText,
 			},
+			Shot:  &models.ShotParams{},
+			Video: &models.VideoParams{},
+			TTS:   &models.TTSParams{},
 		},
 		Result:            models.TaskResult{},
 		Error:             "",

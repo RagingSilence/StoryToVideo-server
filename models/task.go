@@ -2,10 +2,16 @@
 package models
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
+    "log"
 
 	"gorm.io/gorm"
 )
+
 
 // 任务状态（在系统中统一使用这些状态）
 const (
@@ -15,76 +21,71 @@ const (
 	TaskStatusBlocked = "blocked"
 	// processing: 任务正在执行中
 	TaskStatusProcessing = "processing"
-	// finished: 任务成功完成（保存 result 中的资源定位信息）
-	TaskStatusSuccess = "finished"
-	// failed: 任务执行失败（可以重试或人工干预）
-	TaskStatusFailed = "failed"
+	TaskStatusSuccess    = "finished"
+	TaskStatusFailed     = "failed"
 
-	// 四类任务类型（严格区分）
-	TaskTypeProjectText  = "project_text"  // 生成项目整体故事文本（包含每个 shot 的文字信息）
-	TaskTypeShotImage    = "shot_image"    // 根据单个 shot 的文字信息生成图片
-	TaskTypeProjectVideo = "project_video" // 根据项目全部 shot 生成整段视频
-	TaskTypeProjectAudio = "project_audio" // 根据项目故事文本生成整段配音（整片音频）
+	// 定义三种核心任务类型
+	TaskTypeStoryboard = "generate_storyboard" // 文本 -> 分镜脚本
+	TaskTypeShotGen    = "generate_shot"       // 关键帧 -> 生图
+	TaskTypeTTS        = "generate_audio"      // 文本 -> 旁白语音
+	TaskTypeVideoGen   = "generate_video"      // (可选) 图 -> 视频
 )
 
 type Task struct {
-	ID        string `gorm:"primaryKey;type:varchar(64)" json:"id"`
-	ProjectId string `json:"projectId"`
-	// ShotId 可选：当任务与某个具体 shot 关联时填充（shot_image 类型通常会填）
-	//ShotId            string         `json:"shotId,omitempty"`
-	Type       string         `json:"type"`
-	Status     string         `json:"status"`
-	Progress   int            `json:"progress"`
-	Message    string         `json:"message"`
-	Parameters TaskParameters `gorm:"type:json" json:"parameters"`
-	// Result 仅包含资源定位信息（客户端根据该信息去查询具体资源）
-	Result            TaskResult `gorm:"type:json" json:"result"`
-	Error             string     `json:"error"`
-	EstimatedDuration int        `json:"estimatedDuration"`
-	StartedAt         time.Time  `json:"startedAt"`
-	FinishedAt        time.Time  `json:"finishedAt"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	ID                string         `gorm:"primaryKey;type:varchar(64)" json:"id"`
+	ProjectId         string         `json:"projectId"`
+	ShotId            string         `json:"shotId,omitempty"` 
+	Type              string         `json:"type"`
+	Status            string         `json:"status"`
+	Progress          int            `json:"progress"`
+	Message           string         `json:"message"`
+	Parameters        TaskParameters `gorm:"type:json" json:"parameters"`
+	Result            TaskResult     `gorm:"type:json" json:"result"`
+	Error             string         `json:"error"`
+	EstimatedDuration int            `json:"estimatedDuration"`
+	StartedAt         time.Time      `json:"startedAt"`
+	FinishedAt        time.Time      `json:"finishedAt"`
+	CreatedAt         time.Time      `json:"createdAt"`
+	UpdatedAt         time.Time      `json:"updatedAt"`
 }
 
-// 任务参数：根据任务类型选择使用对应子结构
 type TaskParameters struct {
-	// ProjectText 任务使用 ShotGenerationDefaults 来指定希望产生的 shot 数量、风格等
-	ShotDefaults ShotGenerationParameters `json:"shot_defaults,omitempty"`
-	// ShotImage 任务使用此结构（包含 prompt/尺寸/依赖信息）
-	Shot TaskShotParameters `json:"shot,omitempty"`
-	// ProjectVideo 任务的可选视频参数（覆盖 Project 的默认视频参数）
-	Video VideoParameters `json:"video,omitempty"`
-	// ProjectAudio 任务的可选 TTS 参数（覆盖 Project 的默认 tts 参数）
-	TTS TaskTTSParameters `json:"tts,omitempty"`
-
-	// 通用依赖：例如某些 shot_image 任务可以 depends_on 为 project_text 任务 id 或特定 shot id
-	DependsOn     string   `json:"depends_on,omitempty"`
-	DependsOnList []string `json:"depends_on_list,omitempty"`
+	ShotDefaults *ShotDefaultsParams `json:"shot_defaults,omitempty"`
+	Shot         *ShotParams         `json:"shot,omitempty"`
+	Video        *VideoParams        `json:"video,omitempty"`
+	TTS          *TTSParams          `json:"tts,omitempty"`
 }
 
-type ShotGenerationParameters struct {
-	// 用于 project_text 任务或 project 保存的默认参数
-	ShotCount int    `json:"shot_count,omitempty"`
-	Style     string `json:"style,omitempty"`
+type ShotDefaultsParams struct {
+	ShotCount int    `json:"shot_count"`
+	Style     string `json:"style"`
 	StoryText string `json:"storyText"`
 }
 
-// 单个 shot 的生成参数（用于 shot_image 任务或单 shot 的默认参数）
-type TaskShotParameters struct {
-	ShotId      string `json:"shotId,omitempty"`
-	Prompt      string `json:"prompt,omitempty"` // 分镜文本/提示
+type ShotParams struct {
 	Transition  string `json:"transition"`
-	ImageWidth  int    `json:"image_width,omitempty"`
-	ImageHeight int    `json:"image_height,omitempty"`
+	ShotId      string `json:"shotId,omitempty"`
+	ImageWidth  string `json:"image_width"`
+	ImageHeight string `json:"image_height"`
+	Prompt      string `json:"prompt"`
+	Style       string `json:"style"`
+	ImageLLM    string `json:"image_llm"`
+	GenerateTTS bool   `json:"generate_tts"`
 }
 
-// TTS 参数（整片或单 shot 可复用）
-type TaskTTSParameters struct {
-	Voice      string `json:"voice,omitempty"`
-	Lang       string `json:"lang,omitempty"`
-	SampleRate int    `json:"sample_rate,omitempty"`
-	Format     string `json:"format,omitempty"`
+type VideoParams struct {
+	Resolution string `json:"resolution"`
+	FPS        int    `json:"fps"`
+	Format     string `json:"format"`
+	Bitrate    int    `json:"bitrate"`
+}
+
+type TTSParams struct {
+	Voice      string `json:"voice"`
+	Lang       string `json:"lang"`
+	SampleRate int    `json:"sample_rate"`
+	Format     string `json:"format"`
+	Text       string `json:"text,omitempty"` // 补充：TTS 通常需要输入文本
 }
 
 type VideoParameters struct {
@@ -97,21 +98,76 @@ type VideoParameters struct {
 
 // TaskResult 仅保留最小资源定位信息
 type TaskResult struct {
-	ResourceType string `json:"resource_type,omitempty"` // "project","shot","video","audio"
-	ResourceID   string `json:"resource_id,omitempty"`   // 对应资源 id（由资源 API 提供详细信息）
-	ResourceURL  string `json:"c,omitempty"`  // 可选直接访问的 URL（若系统直接提供）
+	ResourceType string `json:"resource_type"` // e.g., "image", "audio", "json"
+	ResourceId   string `json:"resource_id"`
+	ResourceUrl  string `json:"resource_url"`
+	Data map[string]interface{} `json:"data,omitempty"` 
+}
+// 实现 driver.Valuer 接口: Go Struct -> JSON String (存入数据库)
+func (p TaskParameters) Value() (driver.Value, error) {
+	return json.Marshal(p)
+}
+
+// 实现 sql.Scanner 接口: JSON String -> Go Struct (从数据库读取)
+func (p *TaskParameters) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New(fmt.Sprint("Failed to unmarshal JSONB value:", value))
+	}
+	return json.Unmarshal(bytes, p)
+}
+
+
+// 实现 driver.Valuer 接口
+func (r TaskResult) Value() (driver.Value, error) {
+	return json.Marshal(r)
+}
+
+// 实现 sql.Scanner 接口
+func (r *TaskResult) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New(fmt.Sprint("Failed to unmarshal JSONB value:", value))
+	}
+	return json.Unmarshal(bytes, r)
+}
+
+type TaskShotsResult struct {
+	GeneratedShots []Shot  `json:"generated_shots"`
+	TotalShots     int     `json:"total_shots"`
+	TotalTime      float64 `json:"total_time"`
+}
+
+type TaskVideoResult struct {
+	Path       string `json:"path"`
+	Duration   string `json:"duration"`
+	FPS        string `json:"fps"`
+	Resolution string `json:"resolution"`
+	Format     string `json:"format"`
+	TotalTime  string `json:"total_time"`
 }
 
 // ...existing code...
 func (t *Task) UpdateStatus(db *gorm.DB, status string, result interface{}, errMsg string) error {
-	// 保持现有实现
 	updates := map[string]interface{}{
 		"status":     status,
 		"updated_at": time.Now(),
 	}
 	if result != nil {
-		updates["result"] = result
-	}
+        jsonBytes, err := json.Marshal(result)
+        if err != nil {
+            log.Printf("序列化任务结果失败: %v", err)
+            // 如果序列化失败，可以选择不更新 result，或者存一个错误提示
+        } else {
+            updates["result"] = jsonBytes
+        }
+    }
 
 	if errMsg != "" {
 		updates["error"] = errMsg
@@ -125,4 +181,9 @@ func GetTaskByIDGorm(db *gorm.DB, taskID string) (*Task, error) {
 		return nil, err
 	}
 	return &task, nil
+}
+
+// 强制指定表名为 "task" (解决 Error 1146 表不存在的问题)
+func (Task) TableName() string {
+	return "task"
 }

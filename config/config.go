@@ -26,6 +26,14 @@ type Config struct {
     Worker struct {
         Addr string `yaml:"addr"` 
     } `yaml:"worker"`
+    MinIO struct {
+        Endpoint  string `yaml:"endpoint"`
+        AccessKey string `yaml:"access_key"`
+        SecretKey string `yaml:"secret_key"`
+        Bucket    string `yaml:"bucket"`
+        UseSSL    bool   `yaml:"use_ssl"`
+        Domain    string `yaml:"domain"`
+    } `yaml:"minio"`
 }
 
 var AppConfig *Config

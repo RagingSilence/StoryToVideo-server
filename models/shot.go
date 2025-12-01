@@ -14,17 +14,19 @@ const (
 )
 
 type Shot struct {
-	ID          string    `gorm:"primaryKey;type:varchar(64)" json:"id"`
-	ProjectId   string    `json:"projectId"`
-	Order       int       `json:"order"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Prompt      string    `json:"prompt"`
-	Status      string    `json:"status"`
-	ImagePath   string    `json:"imagePath"`
-	Transition  string    `json:"transition"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+    ID          string    `gorm:"primaryKey;type:varchar(64)" json:"id"`
+    ProjectId   string    `json:"projectId"`
+    Order       int       `json:"order"`
+    Title       string    `json:"title"`
+    Description string    `json:"description"`
+    Prompt      string    `json:"prompt"`
+    Status      string    `json:"status"`
+    ImagePath   string    `json:"imagePath"`
+    AudioPath   string    `json:"audioPath"`
+    Transition  string    `json:"transition"`
+    VideoUrl    string    `json:"videoUrl"`
+    CreatedAt   time.Time `json:"createdAt"`
+    UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 func BatchCreateShots(db *gorm.DB, shots []Shot) error {
@@ -44,9 +46,13 @@ func (s *Shot) UpdateImage(db *gorm.DB, imagePath string) error {
 }
 
 func GetShotByIDGorm(db *gorm.DB, shotID string) (*Shot, error) {
-	var shot Shot
-	if err := db.First(&shot, "id = ?", shotID).Error; err != nil {
-		return nil, err
-	}
-	return &shot, nil
+    var shot Shot
+    if err := db.First(&shot, "id = ?", shotID).Error; err != nil {
+        return nil, err
+    }
+    return &shot, nil
+}
+
+func (Shot) TableName() string {
+    return "shot"
 }
