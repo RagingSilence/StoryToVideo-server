@@ -26,8 +26,8 @@ const (
 
 	// 定义三种核心任务类型
 	TaskTypeStoryboard = "generate_storyboard" // 文本 -> 分镜脚本
-	TaskTypeShotGen    = "generate_shot"       // 关键帧 -> 生图
-	TaskTypeTTS        = "generate_audio"      // 文本 -> 旁白语音
+	TaskTypeShotImage    = "generate_shot"       // 关键帧 -> 生图
+	TaskTypeProjectAudio  = "generate_audio"      // 文本 -> 旁白语音
 	TaskTypeVideoGen   = "generate_video"      // (可选) 图 -> 视频
 )
 
@@ -54,6 +54,7 @@ type TaskParameters struct {
 	Shot         *ShotParams         `json:"shot,omitempty"`
 	Video        *VideoParams        `json:"video,omitempty"`
 	TTS          *TTSParams          `json:"tts,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty"` 
 }
 
 type ShotDefaultsParams struct {

@@ -105,7 +105,7 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 
 	case models.TaskTypeStoryboard: // 故事 -> 分镜
 		processingErr = p.handleStoryboardResult(task.ProjectId, resultData)
-	case models.TaskTypeShotGen,"regenerate_shot": //关键帧 -> 生图,or 重新生成图像
+	case models.TaskTypeShotImage,"regenerate_shot": //关键帧 -> 生图,or 重新生成图像
 		shotId := task.ShotId
 		//先使用任务中的 ShotId，如果没有则尝试从参数中获取
         if  shotId == "" && task.Parameters.Shot != nil {
@@ -113,7 +113,7 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 		}
 		processingErr = p.handleImageResult(shotId, resultData)
 
-	case models.TaskTypeTTS:        // 文本 -> 语音
+	case models.TaskTypeProjectAudio:        // 文本 -> 语音
 		shotId := task.ShotId
         if  shotId == "" && task.Parameters.Shot != nil { 
 			shotId = task.Parameters.Shot.ShotId 
@@ -183,7 +183,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 			//"task_id":         task.ID,
 		}
 		
-	case models.TaskTypeShotGen, "regenerate_shot":
+	case models.TaskTypeShotImage, "regenerate_shot":
 		// 获取分镜 Prompt
 		apiPath = "/v1/image/generate"
 		params := task.Parameters.Shot
@@ -215,7 +215,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 			//"task_id":         task.ID,                     // 额外携带 TaskID
 		}
 
-	case models.TaskTypeTTS:
+	case models.TaskTypeProjectAudio:
 		// 获取分镜文本
 		apiPath = "/v1/audio/generate"
 		params := task.Parameters.TTS
@@ -368,9 +368,9 @@ func (p *Processor) handleStoryboardResult(projectID string, result map[string]i
 	if !ok {
 		return fmt.Errorf("missing 'shots' in result")
 	}
-	shotsListIface, ok := shotsData.([]interface{})
+	shotsList, ok := shotsData.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("'shots' is not a list")
+		return fmt.Errorf("'shots' is not a list")
 	}
 
 	var shotsToCreate []models.Shot
@@ -391,20 +391,21 @@ func (p *Processor) handleStoryboardResult(projectID string, result map[string]i
 		shotsToCreate = append(shotsToCreate, newShot)
 	}
 
-	if len(shotsToCreate) > 0 {
-		if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
-			return nil, err
-		}
-		log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
-	}
+	  if len(shotsToCreate) > 0 {
+        if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
+            return err
+        }
+    }
+	log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
+	
+	return nil
 
-	// 从 DB 读取刚创建的 shots（按 order 排序）
-	shots, err := models.GetShotsByProjectID(projectID)
-	if err != nil {
-		return nil, err
-	}
-
-	return shots, nil
+	// // 从 DB 读取刚创建的 shots（按 order 排序）
+	// shots, err := models.GetShotsByProjectID(projectID)
+	// if err != nil {
+	// 	return err
+	// }
+	// return shots,nil
 }
 
 // unlockDependentShotTasks：把依赖 textTaskID 的 blocked shot tasks 解锁（填充 shotId/prompt 并设为 pending，入队）

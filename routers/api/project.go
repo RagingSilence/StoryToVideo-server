@@ -103,14 +103,13 @@ func CreateProject(c *gin.Context) {
 			Progress:  0,
 			Message:   "等待文本任务完成以生成分镜图片",
 			Parameters: models.TaskParameters{
-				Shot: models.TaskShotParameters{
-					// ShotId / Prompt 在文本完成后会由处理器/worker 填充或由客户端获取资源后填充
+				Shot: &models.ShotParams{
 					Prompt:      "",
 					Transition:  "",
-					ImageWidth:  1024,
-					ImageHeight: 1024,
+					ImageWidth:  "1024",
+					ImageHeight: "1024",
 				},
-				DependsOn: textTask.ID,
+				DependsOn: []string{textTask.ID},
 			},
 			Result:            models.TaskResult{},
 			Error:             "",

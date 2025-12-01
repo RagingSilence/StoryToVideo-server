@@ -2,8 +2,6 @@
 package api
 
 import (
-    "database/sql"
-    "encoding/json"
     "log"
     "net/http"
     "time"
@@ -23,7 +21,7 @@ func GenerateProjectTTS(c *gin.Context) {
     projectID := c.Param("project_id")
 
     // 默认 TTS 参数（可扩展为从请求体读取）
-    ttsDefaults := models.TaskTTSParameters{
+    ttsDefaults := models.TTSParams{
         Voice:      "xiaoyan",
         Lang:       "zh-CN",
         SampleRate: 24000,
@@ -38,7 +36,7 @@ func GenerateProjectTTS(c *gin.Context) {
         Progress:  0,
         Message:   "项目音频 (TTS) 生成任务已创建",
         Parameters: models.TaskParameters{
-            TTS: ttsDefaults,
+            TTS: &ttsDefaults,
         },
         Result:            models.TaskResult{},
         Error:             "",

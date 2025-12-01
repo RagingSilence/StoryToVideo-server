@@ -2,7 +2,6 @@
 package api
 
 import (
-	"log"
 	"net/http"
 	"time"
 

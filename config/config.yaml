@@ -15,7 +15,7 @@ worker:
   addr: "http://127.0.0.1:6000"
   timeout_minutes: 20 
 minio:
-    endpoint: "http://119.45.124.222:9000"  # MinIO 的地址
+    endpoint: "119.45.124.222:9000"  # MinIO 的地址
     access_key: "story2video"
     secret_key: "s2v_secret"
     bucket: "story2video"      # 存放视频的桶名
