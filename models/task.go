@@ -6,12 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
-    "log"
 
 	"gorm.io/gorm"
 )
-
 
 // 任务状态（在系统中统一使用这些状态）
 const (
@@ -23,18 +22,20 @@ const (
 	TaskStatusProcessing = "processing"
 	TaskStatusSuccess    = "finished"
 	TaskStatusFailed     = "failed"
+	// cancelled: 任务被用户/系统取消（例如项目更新时取消正在 processing 的任务）
+	TaskStatusCancelled = "cancelled"
 
 	// 定义三种核心任务类型
-	TaskTypeStoryboard = "generate_storyboard" // 文本 -> 分镜脚本
+	TaskTypeStoryboard   = "generate_storyboard" // 文本 -> 分镜脚本
 	TaskTypeShotImage    = "generate_shot"       // 关键帧 -> 生图
-	TaskTypeProjectAudio  = "generate_audio"      // 文本 -> 旁白语音
-	TaskTypeVideoGen   = "generate_video"      // (可选) 图 -> 视频
+	TaskTypeProjectAudio = "generate_audio"      // 文本 -> 旁白语音
+	TaskTypeVideoGen     = "generate_video"      // (可选) 图 -> 视频
 )
 
 type Task struct {
 	ID                string         `gorm:"primaryKey;type:varchar(64)" json:"id"`
 	ProjectId         string         `json:"projectId"`
-	ShotId            string         `json:"shotId,omitempty"` 
+	ShotId            string         `json:"shotId,omitempty"`
 	Type              string         `json:"type"`
 	Status            string         `json:"status"`
 	Progress          int            `json:"progress"`
@@ -54,7 +55,7 @@ type TaskParameters struct {
 	Shot         *ShotParams         `json:"shot,omitempty"`
 	Video        *VideoParams        `json:"video,omitempty"`
 	TTS          *TTSParams          `json:"tts,omitempty"`
-	DependsOn []string `json:"depends_on,omitempty"` 
+	DependsOn    []string            `json:"depends_on,omitempty"`
 }
 
 type ShotDefaultsParams struct {
@@ -99,11 +100,12 @@ type VideoParameters struct {
 
 // TaskResult 仅保留最小资源定位信息
 type TaskResult struct {
-	ResourceType string `json:"resource_type"` // e.g., "image", "audio", "json"
-	ResourceId   string `json:"resource_id"`
-	ResourceUrl  string `json:"resource_url"`
-	Data map[string]interface{} `json:"data,omitempty"` 
+	ResourceType string                 `json:"resource_type"` // e.g., "image", "audio", "json"
+	ResourceId   string                 `json:"resource_id"`
+	ResourceUrl  string                 `json:"resource_url"`
+	Data         map[string]interface{} `json:"data,omitempty"`
 }
+
 // 实现 driver.Valuer 接口: Go Struct -> JSON String (存入数据库)
 func (p TaskParameters) Value() (driver.Value, error) {
 	return json.Marshal(p)
@@ -120,7 +122,6 @@ func (p *TaskParameters) Scan(value interface{}) error {
 	}
 	return json.Unmarshal(bytes, p)
 }
-
 
 // 实现 driver.Valuer 接口
 func (r TaskResult) Value() (driver.Value, error) {
@@ -161,14 +162,14 @@ func (t *Task) UpdateStatus(db *gorm.DB, status string, result interface{}, errM
 		"updated_at": time.Now(),
 	}
 	if result != nil {
-        jsonBytes, err := json.Marshal(result)
-        if err != nil {
-            log.Printf("序列化任务结果失败: %v", err)
-            // 如果序列化失败，可以选择不更新 result，或者存一个错误提示
-        } else {
-            updates["result"] = jsonBytes
-        }
-    }
+		jsonBytes, err := json.Marshal(result)
+		if err != nil {
+			log.Printf("序列化任务结果失败: %v", err)
+			// 如果序列化失败，可以选择不更新 result，或者存一个错误提示
+		} else {
+			updates["result"] = jsonBytes
+		}
+	}
 
 	if errMsg != "" {
 		updates["error"] = errMsg
