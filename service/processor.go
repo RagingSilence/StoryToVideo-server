@@ -4,11 +4,14 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"StoryToVideo-server/config"
@@ -107,7 +110,6 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 		processingErr = p.handleStoryboardResult(task.ProjectId, resultData)
 	case models.TaskTypeShotImage,"regenerate_shot": //关键帧 -> 生图,or 重新生成图像
 		shotId := task.ShotId
-		//先使用任务中的 ShotId，如果没有则尝试从参数中获取
         if  shotId == "" && task.Parameters.Shot != nil {
 			shotId = task.Parameters.Shot.ShotId 
 		}
@@ -152,94 +154,77 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	var reqBody map[string]interface{}
 
 	switch task.Type {
-	case models.TaskTypeStoryboard:// 故事 -> 分镜
-		// 获取项目故事文本
+	case models.TaskTypeStoryboard: // 故事 -> 分镜
 		apiPath = "/v1/llm/storyboard"
 		var project models.Project
 		if err := p.DB.First(&project, "id = ?", task.ProjectId).Error; err != nil {
 			return "", fmt.Errorf("project not found: %v", err)
 		}
 		params := task.Parameters.ShotDefaults
-        if params == nil { return "", fmt.Errorf("missing shot_defaults parameters") }
+		if params == nil {
+			return "", fmt.Errorf("missing shot_defaults parameters")
+		}
 
-		targetShots := params.ShotCount
-		if targetShots <= 0 {
-			targetShots = 8 
-		}
-		extras := map[string]interface{}{
-			"tone":              "warm", //
-			"duration_hint_sec": project.Duration,
-		}
-		if extras["duration_hint_sec"] == 0 {
-			extras["duration_hint_sec"] = 5 // 默认 5s
-		}
+		// 构造请求体：基于现有数据结构
 		reqBody = map[string]interface{}{
-			"story_id":     project.ID,        // 对应 story_id
-			"story_text":   params.StoryText, // 对应 story_text
-			"style":        params.Style,     // 对应 style
-			"target_shots": targetShots,       // 对应 target_shots
-			"lang":         "zh",              // 对应 lang
-			"extras":       extras,            // 对应 extras 对象
-			//"task_id":         task.ID,
+			"story_id":     project.ID,
+			"story_text":   params.StoryText,
+			"style":        params.Style,
+			"target_shots": params.ShotCount,
+			"lang":         "zh", // 默认中文，可扩展
 		}
-		
+
 	case models.TaskTypeShotImage, "regenerate_shot":
-		// 获取分镜 Prompt
+		// 文生图：生成关键帧
 		apiPath = "/v1/image/generate"
 		params := task.Parameters.Shot
-		if params == nil { return "", fmt.Errorf("missing shot parameters") }
+		if params == nil {
+			return "", fmt.Errorf("missing shot parameters")
+		}
 
 		width, _ := strconv.Atoi(params.ImageWidth)
-		if width == 0 {
-			width = 1024
-		}
+		if width == 0 { width = 1024 }
 		height, _ := strconv.Atoi(params.ImageHeight)
-		if height == 0 {
-			height = 576
-		}
+		if height == 0 { height = 576 }
 		sizeStr := fmt.Sprintf("%dx%d", width, height)
 
-		// 构造请求体
 		reqBody = map[string]interface{}{
-			"shot_id":         params.ShotId,                 // 对应 shot_id
-			"prompt":          params.Prompt,// 对应 prompt (使用任务中的提示词)
-			"negative_prompt": "blurry, lowres, bad anatomy, text, watermark", // 默认负向提示词
-			"style":           params.Style,  // 对应 style
-			"size":            sizeStr,                     // 对应 size
-			"model":           "sd-turbo",                  // 默认模型，可改为从 Parameters 读取
-			"seed":            42,                          // 默认种子，建议改为 -1 或随机
-			"steps":           20,                          // 默认步数
-			"guidance_scale":  7.5,                         // 默认引导系数
-			"scheduler":       "euler_a",                   // 默认调度器
-			"safety_check":    false,                       // 是否开启安全检查
-			//"task_id":         task.ID,                     // 额外携带 TaskID
+			"shot_id":         params.ShotId,
+			"prompt":          params.Prompt,
+			"negative_prompt": "blurry, lowres, bad anatomy, text, watermark",
+			"style":           params.Style,
+			"size":            sizeStr,
+			"model":           "sd-turbo", // 默认模型
 		}
 
 	case models.TaskTypeProjectAudio:
-		// 获取分镜文本
+		// TTS 生成
 		apiPath = "/v1/audio/generate"
 		params := task.Parameters.TTS
-		if params == nil { return "", fmt.Errorf("missing tts parameters") }
+		if params == nil {
+			return "", fmt.Errorf("missing tts parameters")
+		}
 		text := params.Text
-        if text == "" && task.ShotId != "" {
-            shot, _ := models.GetShotByIDGorm(p.DB, task.ShotId)
-            if shot != nil {
-                text = shot.Description // 使用分镜描述作为文本
-            }
-        }
-        reqBody = map[string]interface{}{
-            "text":        text,
-            "voice":    params.Voice,
-            "language":    params.Lang,
-            "sample_rate": params.SampleRate,
-            "format":      params.Format,
-        }
+		if text == "" && task.ShotId != "" {
+			shot, _ := models.GetShotByIDGorm(p.DB, task.ShotId)
+			if shot != nil {
+				text = shot.Description
+			}
+		}
+		reqBody = map[string]interface{}{
+			"text":        text,
+			"voice":       params.Voice,
+			"language":    params.Lang,
+			"sample_rate": params.SampleRate,
+			"format":      params.Format,
+		}
 
 	case models.TaskTypeVideoGen: // 图 -> 视频
-		// 获取分镜图像路径
 		apiPath = "/v1/video/generate"
 		parameters := task.Parameters.Video
-		if parameters == nil { return "", fmt.Errorf("missing video parameters") }
+		if parameters == nil {
+			return "", fmt.Errorf("missing video parameters")
+		}
 
 		shot, err := models.GetShotByIDGorm(p.DB, task.ShotId)
 		if err != nil {
@@ -248,30 +233,30 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		if shot.ImagePath == "" {
 			return "", fmt.Errorf("shot has no image_path (unable to gen video)")
 		}
-		// 1. 处理数值转换 (FPS)
-		fps := 24 // 默认值
-		if parameters.FPS != 0 {
-			fps = parameters.FPS
-		}
+
+		fps := 24
+		if parameters.FPS != 0 { fps = parameters.FPS }
 		
-		// 2. 处理分辨率
-		resolution := "1280x720" // 默认值
-		if parameters.Resolution != "" {
-			resolution = parameters.Resolution
-		}
-		//音频不知道怎么做，先不传
+		resolution := "1280x720"
+		if parameters.Resolution != "" { resolution = parameters.Resolution }
+
 		reqBody = map[string]interface{}{
 			"shot_id":         shot.ID,
 			"image_url":       shot.ImagePath, 
-			"duration_sec":    5,              
+			"duration_sec":    4,
 			"fps":             fps,
 			"resolution":      resolution,
 			"model":           "svd-img2vid",
 			"transition":      shot.Transition,
 			"motion_strength": 0.7,
-			"seed":            time.Now().Unix() % 100000, 
-			//"audio":           audioObj,
-			// "task_id": task.ID, // 如果对方接口允许额外字段则加上，否则去掉
+		}
+
+		// 如果分镜有音频，传给视频生成接口
+		if shot.AudioPath != "" {
+			reqBody["audio"] = map[string]interface{}{
+				"voiceover_url": shot.AudioPath,
+				"ducking": true,
+			}
 		}
 
 	default:
@@ -282,44 +267,45 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	fullURL := p.WorkerEndpoint + apiPath
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-    return "", fmt.Errorf("marshal request failed: %v", err)
+		return "", fmt.Errorf("marshal request failed: %v", err)
 	}
 	log.Printf("POST %s", fullURL)
+	
 	resp, err := http.Post(fullURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		return "", fmt.Errorf("worker status code: %d", resp.StatusCode)
 	}
 
-	// 解析响应，获取 Job ID
+	// 解析响应：现在返回的是完整的 Task 对象
 	var respData map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
 		return "", fmt.Errorf("decode response failed: %v", err)
 	}
 
-	// 假设接口返回格式为: {"job_id": "xxx", "status": "pending"} 
-	// 或者直接返回 {"id": "xxx"}
-	if jobID, ok := respData["job_id"].(string); ok {
-    return jobID, nil
+	// 直接从根对象获取 ID
+	if id, ok := respData["id"].(string); ok {
+		return id, nil
 	}
-	if jobID, ok := respData["id"].(string); ok {
+	// 兼容：尝试找 job_id
+	if jobID, ok := respData["job_id"].(string); ok {
 		return jobID, nil
 	}
-	return "", fmt.Errorf("response missing 'job_id' or 'id': %v", respData)
+	
+	return "", fmt.Errorf("response missing 'id': %v", respData)
 }
 
 // pollJobResult 轮询 GET /v1/jobs/{job_id} 直到完成
 func (p *Processor) pollJobResult(jobID string) (map[string]interface{}, error) {
 	jobURL := fmt.Sprintf("%s/v1/jobs/%s", p.WorkerEndpoint, jobID)
 	
-	// 修改这里：直接使用硬编码或默认值，因为 config 中没有定义 timeout_minutes
-	timeoutDuration := 30 * time.Minute 
+	timeoutDuration := 30 * time.Minute
 	timeout := time.After(timeoutDuration)
-	ticker := time.NewTicker(3 * time.Second) // 每 3 秒轮询一次
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -327,40 +313,152 @@ func (p *Processor) pollJobResult(jobID string) (map[string]interface{}, error) 
 		case <-timeout:
 			return nil, fmt.Errorf("polling timeout")
 		case <-ticker.C:
-			// 发起查询
 			resp, err := http.Get(jobURL)
 			if err != nil {
 				log.Printf("轮询网络错误(重试中): %v", err)
 				continue
 			}
 			
-			var jobData map[string]interface{}
-            err = json.NewDecoder(resp.Body).Decode(&jobData)
-            resp.Body.Close() 
-            
-            if err != nil {
-                continue
-            }
+			bodyBytes, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				continue
+			}
 
-			// 检查状态 (字段为 status: pending/processing/success/failed)
-			status, _ := jobData["status"].(string)
-			log.Printf("Job %s Status: %s", jobID, status)
-
-			if status == "success" || status == "finished" || status == "completed" {
-				// 获取结果数据
-				if result, ok := jobData["result"].(map[string]interface{}); ok {
-					return result, nil
+			// 解析为 map 以便灵活处理
+			var taskResp map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &taskResp); err != nil {
+				log.Printf("JSON 解析失败: %v", err)
+				taskResp = parseNonStandardFormat(string(bodyBytes))
+				if taskResp == nil {
+					continue
 				}
-				return jobData, nil // 容错
+			}
+			var jobData map[string]interface{}
+			if d, ok := taskResp["data"].(map[string]interface{}); ok {
+				jobData = d
+			} else {
+				jobData = taskResp
+			}
+
+			status, _ := jobData["status"].(string)
+			if status == "finished" || status == "success" || status == "completed" || status == "succeeded" {
+				resMap := extractResultFromJobData(jobData)
+				if resMap != nil {
+					return resMap, nil
+				}
+				
+				// 容错
+				return jobData, nil
 			}
 
 			if status == "failed" || status == "error" {
 				errMsg, _ := jobData["error"].(string)
 				return nil, fmt.Errorf("worker reported failure: %s", errMsg)
 			}
-			// 继续等待 (pending/processing)
+			// 继续轮询
 		}
 	}
+}
+
+// 新增：从 jobData 抽取嵌套的 result（兼容多种格式）
+func extractResultFromJobData(jobData map[string]interface{}) map[string]interface{} {
+	if jobData == nil {
+		return nil
+	}
+
+	// 优先取 "result"
+	if r, ok := jobData["result"]; ok && r != nil {
+		// 如果是 map[string]interface{} 直接返回
+		if rm, ok := r.(map[string]interface{}); ok {
+			return rm
+		}
+		// 如果是字符串（JSON 编码），尝试解析
+		if rs, ok := r.(string); ok && rs != "" {
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(rs), &m); err == nil {
+				return m
+			}
+			// 如果不是 JSON，但可能是直接的 base64 或 url，放入 map 返回
+			return map[string]interface{}{"raw_result": rs}
+		}
+		// 如果 result 是结构化但类型断言失败（例如 []byte），尝试 marshal->unmarshal
+		if b, err := json.Marshal(r); err == nil {
+			var m map[string]interface{}
+			if err2 := json.Unmarshal(b, &m); err2 == nil {
+				return m
+			}
+		}
+	}
+
+	// 如果没有 result，但有 "Result"（大小写差异）也尝试
+	if r, ok := jobData["Result"]; ok && r != nil {
+		if rm, ok := r.(map[string]interface{}); ok {
+			return rm
+		}
+	}
+
+	// 有时真正的 payload 在 result.data 或 result.data.xxx 中
+	if r, ok := jobData["result"].(map[string]interface{}); ok {
+		if data, ok := r["data"].(map[string]interface{}); ok {
+			return data
+		}
+	}
+
+	// 如果 jobData 本身看起来就是一个 TaskResult 形式（包含 resource_url 或 data）
+	if _, ok := jobData["resource_url"]; ok {
+		return jobData
+	}
+	if _, ok := jobData["data"]; ok {
+		if d, ok := jobData["data"].(map[string]interface{}); ok {
+			return d
+		}
+	}
+
+	return nil
+}
+
+// parseNonStandardFormat 解析非标准格式的响应 (如 "image:xxx status:success")
+func parseNonStandardFormat(body string) map[string]interface{} {
+    result := make(map[string]interface{})
+    
+    // 尝试解析 "key:value key2:value2" 格式
+    // 注意：这里假设 value 中不包含空格，如果 base64 数据很长，需要特殊处理
+    
+    // 先找 status
+    if idx := strings.Index(body, "status:"); idx != -1 {
+        statusPart := body[idx+7:]
+        // 取到下一个空格或结尾
+        endIdx := strings.Index(statusPart, " ")
+        if endIdx == -1 {
+            endIdx = len(statusPart)
+        }
+        result["status"] = strings.TrimSpace(statusPart[:endIdx])
+    }
+    
+    // 找 image
+    if idx := strings.Index(body, "image:"); idx != -1 {
+        imagePart := body[idx+6:]
+        // 取到 " status:" 或结尾
+        endIdx := strings.Index(imagePart, " status:")
+        if endIdx == -1 {
+            endIdx = strings.Index(imagePart, " ")
+            if endIdx == -1 {
+                endIdx = len(imagePart)
+            }
+        }
+        result["image"] = strings.TrimSpace(imagePart[:endIdx])
+    }
+    
+    if len(result) == 0 {
+        return nil
+    }
+    
+    log.Printf("解析非标准格式成功: status=%v, image长度=%d", 
+        result["status"], 
+        len(fmt.Sprintf("%v", result["image"])))
+    
+    return result
 }
 
 func (p *Processor) handleStoryboardResult(projectID string, result map[string]interface{}) error {
@@ -408,99 +506,90 @@ func (p *Processor) handleStoryboardResult(projectID string, result map[string]i
 	// return shots,nil
 }
 
-// unlockDependentShotTasks：把依赖 textTaskID 的 blocked shot tasks 解锁（填充 shotId/prompt 并设为 pending，入队）
-func (p *Processor) unlockDependentShotTasks(textTaskID string, _ string, createdShots []models.Shot) error {
-	// 从原生 SQL 查出被阻塞的任务 id（parameters JSON 的 depends_on = textTaskID）
-	rows, err := models.DB.Query(`SELECT id FROM task WHERE status = ? AND JSON_EXTRACT(parameters, '$.depends_on') = ?`, models.TaskStatusBlocked, textTaskID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var taskIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			continue
-		}
-		taskIDs = append(taskIDs, id)
-	}
-
-	if len(taskIDs) == 0 {
-		return nil
-	}
-
-	// 将 createdShots 按 order 排序（GetShotsByProjectID 已保证），并为每个被阻塞任务分配一个 shot（按顺序）
-	for i, tid := range taskIDs {
-		if i >= len(createdShots) {
-			// 如果任务比生成的 shot 多，则跳出或只解锁已有的
-			break
-		}
-		shot := createdShots[i]
-
-		// 读取任务以便修改 parameters（使用 SQL 版本）
-		t, err := models.GetTaskByID(tid)
-		if err != nil {
-			log.Printf("GetTaskByID failed for %s: %v", tid, err)
-			continue
-		}
-
-		// 填充 parameters.shot.shotId / prompt
-		t.Parameters.Shot.ShotId = shot.ID
-		// 若 shot 提示为空，则保持原有 prompt
-		if t.Parameters.Shot.Prompt == "" {
-			t.Parameters.Shot.Prompt = shot.Prompt
-		}
-
-		// marshal parameters 并更新任务的 parameters + status
-		paramsBytes, _ := json.Marshal(t.Parameters)
-		if _, err := models.DB.Exec(`UPDATE task SET parameters = ?, status = ?, updated_at = ? WHERE id = ?`, paramsBytes, models.TaskStatusPending, time.Now(), tid); err != nil {
-			log.Printf("failed to update task parameters/status for %s: %v", tid, err)
-			continue
-		}
-		// 将任务入队
-		if err := EnqueueTask(tid); err != nil {
-			log.Printf("EnqueueTask failed for %s: %v", tid, err)
-			// 不回滚状态，但记录日志
-		} else {
-			log.Printf("Unblocked and enqueued task %s (shot %s)", tid, shot.ID)
-		}
-	}
-
-	return nil
-}
-
 // 处理图像生成结果 -> 更新 ImagePath
 func (p *Processor) handleImageResult(shotID string, result map[string]interface{}) error {
-	// 假设返回 {"image_url": "http://tos..."} 或 {"images": ["..."]}
-	var imageURL string
-	
-	if url, ok := result["image_url"].(string); ok {
-		imageURL = url
-	} else if images, ok := result["images"].([]interface{}); ok && len(images) > 0 {
-		if url, ok := images[0].(string); ok {
-			imageURL = url
-		}
-	}
-
-	if imageURL == "" {
-		return fmt.Errorf("no image url found in result")
-	}
-	
-	// 下载并上传到 MinIO
-	finalURL, err := downloadAndUploadToMinIO(imageURL, fmt.Sprintf("shots/%s/image.png", shotID))
-    if err != nil {
-        log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
-        finalURL = imageURL // 容错：使用原始 URL
+    // 如果传入的是完整 Task 对象（包含 id/type/result），优先取内部 result 字段
+    if _, hasID := result["id"]; hasID {
+        if inner, ok := result["result"]; ok && inner != nil {
+            if imap, ok := inner.(map[string]interface{}); ok {
+                result = imap
+            } else if istr, ok := inner.(string); ok && istr != "" {
+                var tmp map[string]interface{}
+                if err := json.Unmarshal([]byte(istr), &tmp); err == nil {
+                    result = tmp
+                } else {
+                    // 把原始字符串放到一个键里，后面逻辑会尝试 raw_result
+                    result = map[string]interface{}{"raw_result": istr}
+                }
+            }
+        }
     }
-	
-	shot, err := models.GetShotByIDGorm(p.DB, shotID)
-	if err != nil {
-		return err
-	}
-	// 更新数据库
-	// 修改这里：使用 finalURL 而不是 imageURL
-	return shot.UpdateImage(p.DB, finalURL)
+    
+    var finalURL string
+    var err error
+    objectName := fmt.Sprintf("shots/%s/image.png", shotID)
+
+    // 首先检查是否有 "image" 字段（可能是 base64 或 URL）
+    if imageData, ok := result["image"].(string); ok && imageData != "" {
+        // 判断是 URL 还是 Base64
+        if strings.HasPrefix(imageData, "http://") || strings.HasPrefix(imageData, "https://") {
+            // 是 URL
+            finalURL, err = downloadAndUploadToMinIO(imageData, objectName)
+            if err != nil {
+                log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
+                finalURL = imageData
+            }
+        } else {
+            // 假设是 Base64
+            log.Printf("检测到 Base64 图片数据，长度: %d", len(imageData))
+            finalURL, err = uploadBase64ToMinIO(imageData, objectName)
+            if err != nil {
+                return fmt.Errorf("上传 Base64 图片失败: %v", err)
+            }
+        }
+    } else if base64Data, ok := result["image_base64"].(string); ok && base64Data != "" {
+        log.Printf("检测到 Base64 图片数据 (image_base64)，长度: %d", len(base64Data))
+        finalURL, err = uploadBase64ToMinIO(base64Data, objectName)
+        if err != nil {
+            return fmt.Errorf("上传 Base64 图片失败: %v", err)
+        }
+    } else if url, ok := result["image_url"].(string); ok && url != "" {
+        // URL 格式
+        finalURL, err = downloadAndUploadToMinIO(url, objectName)
+        if err != nil {
+            log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
+            finalURL = url // 容错：使用原始 URL
+        }
+    } else if images, ok := result["images"].([]interface{}); ok && len(images) > 0 {
+        if url, ok := images[0].(string); ok {
+            finalURL, err = downloadAndUploadToMinIO(url, objectName)
+            if err != nil {
+                log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
+                finalURL = url
+            }
+        }
+    }
+
+    if finalURL == "" {
+        // 打印 result 的 keys 和部分值帮助调试
+        log.Printf("[DEBUG] handleImageResult: result 内容:")
+        for k, v := range result {
+            vStr := fmt.Sprintf("%v", v)
+            if len(vStr) > 100 {
+                vStr = vStr[:100] + "...(truncated)"
+            }
+            log.Printf("  [%s]: %s", k, vStr)
+        }
+        return fmt.Errorf("no image data found in result")
+    }
+    
+    shot, err := models.GetShotByIDGorm(p.DB, shotID)
+    if err != nil {
+        return err
+    }
+    // 更新数据库
+    log.Printf("图片上传成功: %s", finalURL)
+    return shot.UpdateImage(p.DB, finalURL)
 }
 
 func (p *Processor) handleTTSResult(shotId string, result map[string]interface{}) error {
@@ -555,6 +644,31 @@ func downloadAndUploadToMinIO(sourceURL, objectName string) (string, error) {
     }
 
     return UploadToMinIO(resp.Body, objectName, resp.ContentLength)
+}
+
+// uploadBase64ToMinIO 将 Base64 编码的图片解码后上传到 MinIO
+func uploadBase64ToMinIO(base64Data, objectName string) (string, error) {
+    // 移除可能的 data URI 前缀 (如 "data:image/png;base64,")
+    if idx := strings.Index(base64Data, ","); idx != -1 {
+        base64Data = base64Data[idx+1:]
+    }
+    
+    // 解码 Base64
+    imageData, err := base64.StdEncoding.DecodeString(base64Data)
+    if err != nil {
+        // 尝试 RawStdEncoding (无 padding)
+        imageData, err = base64.RawStdEncoding.DecodeString(base64Data)
+        if err != nil {
+            return "", fmt.Errorf("base64 decode failed: %v", err)
+        }
+    }
+    
+    log.Printf("Base64 解码成功，图片大小: %d bytes", len(imageData))
+    
+    // 使用 bytes.Reader 创建 io.Reader
+    reader := bytes.NewReader(imageData)
+    
+    return UploadToMinIO(reader, objectName, int64(len(imageData)))
 }
 
 // 工具函数：安全获取 string
