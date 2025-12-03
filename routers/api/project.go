@@ -255,28 +255,24 @@ func UpdateProject(c *gin.Context) {
 			if err := rows.Scan(&tid, &resBytes); err != nil {
 				continue
 			}
-			// var resMap map[string]interface{}
-			// _ = json.Unmarshal(resBytes, &resMap)
-			// var jobID string
-			// if v, ok := resMap["job_id"].(string); ok {
-			//     jobID = v
-			// } else if v, ok := resMap["resource_id"].(string); ok {
-			//     jobID = v
-			// }
-			// if jobID != "" {
-			//     cancelURL := strings.TrimRight(config.AppConfig.Worker.Addr, "/") + "/v1/jobs/" + jobID
-			//     client := &http.Client{Timeout: 5 * time.Second}
-			//     reqHttp, _ := http.NewRequest(http.MethodDelete, cancelURL, nil)
-			//     resp, err := client.Do(reqHttp)
-			//     if err != nil {
-			//         log.Printf("调用 Worker 取消失败 job=%s task=%s: %v", jobID, tid, err)
-			//     } else {
-			//         resp.Body.Close()
-			//         log.Printf("调用 Worker 取消返回 status=%d for job=%s task=%s", resp.StatusCode, jobID, tid)
-			//     }
-			// } else {
-			//     log.Printf("processing 任务 %s 未携带 job_id，仍标记为 cancelled", tid)
-			// }
+			// 1) 解析 result 中的 job_id（如果有），并尝试通知 worker 删除
+			var tr models.TaskResult
+			if len(resBytes) > 0 {
+				_ = json.Unmarshal(resBytes, &tr)
+			}
+			if tr.ResourceId != "" {
+				if err := service.CancelWorkerJob(tr.ResourceId); err != nil {
+					log.Printf("通知 worker 删除 job %s 失败: %v", tr.ResourceId, err)
+				} else {
+					log.Printf("已通知 worker 删除 job %s", tr.ResourceId)
+				}
+			}
+
+			// 2) 取消本地轮询（如果存在）
+			if cancelled := service.CancelPollTask(tid); cancelled {
+				log.Printf("Cancelled poll for task %s", tid)
+			}
+			// 3) 标记为 cancelled（入库）
 			msg := "cancelled due to project update"
 			if err := models.UpdateTaskStatus(tid, models.TaskStatusCancelled, nil, &msg, nil, nil, nil, nil); err != nil {
 				log.Printf("标记任务取消失败 %s: %v", tid, err)
@@ -403,6 +399,39 @@ func UpdateProject(c *gin.Context) {
 // 删除项目
 func DeleteProject(c *gin.Context) {
 	projectID := c.Param("project_id")
+
+	// 在删除前取消正在 processing 的任务并标记 cancelled
+	rows, err := models.DB.Query(`SELECT id, result FROM task WHERE project_id = ? AND status = ?`, projectID, models.TaskStatusProcessing)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var tid string
+			var resBytes []byte
+			if err := rows.Scan(&tid, &resBytes); err != nil {
+				continue
+			}
+
+			// 解析 job_id 并通知 worker 删除
+			var tr models.TaskResult
+			if len(resBytes) > 0 {
+				_ = json.Unmarshal(resBytes, &tr)
+			}
+			if tr.ResourceId != "" {
+				if err := service.CancelWorkerJob(tr.ResourceId); err != nil {
+					log.Printf("通知 worker 删除 job %s 失败: %v", tr.ResourceId, err)
+				} else {
+					log.Printf("已通知 worker 删除 job %s", tr.ResourceId)
+				}
+			}
+
+			if service.CancelPollTask(tid) {
+				log.Printf("Cancelled poll for task %s before project delete", tid)
+			}
+			msg := "cancelled due to project delete"
+			_ = models.UpdateTaskStatus(tid, models.TaskStatusCancelled, nil, &msg, nil, nil, nil, nil)
+		}
+	}
+
 	// 数据库删除项目（级联会删除相关分镜和任务）
 	if err := models.DeleteProjectByID(projectID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除项目失败: " + err.Error()})

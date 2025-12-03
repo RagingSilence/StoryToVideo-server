@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"StoryToVideo-server/config"
@@ -17,6 +18,64 @@ import (
 	"github.com/hibiken/asynq"
 	"gorm.io/gorm"
 )
+
+func CancelWorkerJob(jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("empty job id")
+	}
+	url := config.AppConfig.Worker.Addr + "/v1/api/jobs/" + jobID
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("create delete request failed: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("worker delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var respData map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&respData)
+		return fmt.Errorf("worker delete status: %d, body: %+v", resp.StatusCode, respData)
+	}
+	return nil
+}
+
+// 新增：poll 取消注册表（taskID -> cancelFunc）
+var pollCancelRegistry = struct {
+	sync.RWMutex
+	m map[string]context.CancelFunc
+}{
+	m: make(map[string]context.CancelFunc),
+}
+
+// RegisterPollCancel 注册轮询的 cancelFunc（由 HandleGenerateTask 在开始轮询时调用）
+func RegisterPollCancel(taskID string, cancel context.CancelFunc) {
+	pollCancelRegistry.Lock()
+	defer pollCancelRegistry.Unlock()
+	pollCancelRegistry.m[taskID] = cancel
+}
+
+// UnregisterPollCancel 注销轮询的 cancelFunc（在轮询结束或 task 完成时调用）
+func UnregisterPollCancel(taskID string) {
+	pollCancelRegistry.Lock()
+	defer pollCancelRegistry.Unlock()
+	delete(pollCancelRegistry.m, taskID)
+}
+
+// CancelPollTask 外部调用以取消正在轮询的任务，返回是否实际找到并取消
+func CancelPollTask(taskID string) bool {
+	pollCancelRegistry.Lock()
+	defer pollCancelRegistry.Unlock()
+	if cancel, ok := pollCancelRegistry.m[taskID]; ok {
+		cancel()
+		delete(pollCancelRegistry.m, taskID)
+		return true
+	}
+	return false
+}
 
 // Processor 处理队列任务
 type Processor struct {
@@ -81,15 +140,24 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 		// 直接标记为完成
 		task.UpdateStatus(p.DB, models.TaskStatusSuccess, nil, "Project initialized")
 		return nil
-		}
+	}
 	jobID, err := p.dispatchWorkerRequest(task)
 	if err != nil {
 		log.Printf("Worker 请求失败: %v", err)
 		task.UpdateStatus(p.DB, models.TaskStatusFailed, nil, fmt.Sprintf("Worker Request Failed: %v", err))
 		return err // 返回 err 触发重试
 	}
+	if err := models.UpdateTaskStatus(task.ID, models.TaskStatusProcessing, nil, nil, &models.TaskResult{ResourceId: jobID}, nil, nil, nil); err != nil {
+		log.Printf("写入 job_id 到 task.result 失败: %v", err)
+	}
 	log.Printf("任务已提交，Job ID: %s，开始轮询结果...", jobID)
-	taskResult, err := p.pollJobResult(jobID)
+	// 为轮询创建可取消的子上下文并注册 cancel（外部 API 可通过 CancelPollTask 取消）
+	pollCtx, cancel := context.WithCancel(ctx)
+	RegisterPollCancel(task.ID, cancel)
+	// 确保在本函数结束时注销
+	defer UnregisterPollCancel(task.ID)
+
+	taskResult, err := p.pollJobResult(pollCtx, jobID)
 	if err != nil {
 		log.Printf("轮询任务失败: %v", err)
 		task.UpdateStatus(p.DB, models.TaskStatusFailed, nil, fmt.Sprintf("Job Failed: %v", err))
@@ -139,12 +207,13 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 	log.Printf("Task %s completed successfully", task.ID)
 	return nil
 }
+
 // ============================================================================
 // 通信层：请求分发与轮询
 // ============================================================================
 
 // dispatchWorkerRequest 发送 POST 请求，返回 job_id
-//保留switch结构以便未来根据 task.Type 构建不同请求体，目前均发送到 /v1/generate
+// 保留switch结构以便未来根据 task.Type 构建不同请求体，目前均发送到 /v1/generate
 func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	var apiPath string
 	var specificParams map[string]interface{}
@@ -161,9 +230,9 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		}
 
 		specificParams = map[string]interface{}{
-			"shot_count": 	params.ShotCount,
-			"style":        params.Style,
-			"story_text":   params.StoryText,
+			"shot_count": params.ShotCount,
+			"style":      params.Style,
+			"story_text": params.StoryText,
 		}
 
 	case models.TaskTypeShotImage, "regenerate_shot":
@@ -174,11 +243,11 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		}
 
 		specificParams = map[string]interface{}{
-			"transition":		params.Transition,
-			"shot_id":          params.ShotId,
-			"image_width":      params.ImageWidth,
-			"image_height":     params.ImageHeight,
-			"prompt":           params.Prompt,
+			"transition":   params.Transition,
+			"shot_id":      params.ShotId,
+			"image_width":  params.ImageWidth,
+			"image_height": params.ImageHeight,
+			"prompt":       params.Prompt,
 		}
 
 	case models.TaskTypeProjectAudio:
@@ -190,7 +259,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 
 		specificParams = map[string]interface{}{
 			"voice":       params.Voice,
-			"lang":   		params.Lang,
+			"lang":        params.Lang,
 			"sample_rate": params.SampleRate,
 			"format":      params.Format,
 		}
@@ -210,16 +279,20 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		}
 
 		fps := 24
-		if parameters.FPS != 0 { fps = parameters.FPS }
-		
+		if parameters.FPS != 0 {
+			fps = parameters.FPS
+		}
+
 		resolution := "1280x720"
-		if parameters.Resolution != "" { resolution = parameters.Resolution }
+		if parameters.Resolution != "" {
+			resolution = parameters.Resolution
+		}
 
 		specificParams = map[string]interface{}{
-			"resolution":      resolution,
-			"fps":             fps,
-			"format":          parameters.Format,
-			"bitrate":         parameters.Bitrate,
+			"resolution": resolution,
+			"fps":        fps,
+			"format":     parameters.Format,
+			"bitrate":    parameters.Bitrate,
 		}
 
 	default:
@@ -228,21 +301,21 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 
 	// 发送 HTTP 请求
 	reqBody := map[string]interface{}{
-        "id":         			task.ID,
-        "project_id": 			task.ProjectId,
-        "type":      			task.Type,
-        "status":    			task.Status,
-        "progress":   			task.Progress,
-        "message":    			task.Message,
-		"result":     			task.Result,
-		"error":	  			task.Error,
-		"parameters":			specificParams,
-		"estimated_duration":	task.EstimatedDuration,
-		"started_at":			task.StartedAt,
-		"finished_at":			task.FinishedAt,
-        "created_at": 			task.CreatedAt,
-        "updated_at": 			task.UpdatedAt,
-    }
+		"id":                 task.ID,
+		"project_id":         task.ProjectId,
+		"type":               task.Type,
+		"status":             task.Status,
+		"progress":           task.Progress,
+		"message":            task.Message,
+		"result":             task.Result,
+		"error":              task.Error,
+		"parameters":         specificParams,
+		"estimated_duration": task.EstimatedDuration,
+		"started_at":         task.StartedAt,
+		"finished_at":        task.FinishedAt,
+		"created_at":         task.CreatedAt,
+		"updated_at":         task.UpdatedAt,
+	}
 
 	apiPath = "/v1/generate"
 	fullURL := p.WorkerEndpoint + apiPath
@@ -251,7 +324,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		return "", fmt.Errorf("marshal request failed: %v", err)
 	}
 	log.Printf("POST %s", fullURL)
-	
+
 	resp, err := http.Post(fullURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
@@ -277,28 +350,37 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	return "", fmt.Errorf("response missing 'id'")
 }
 
-
 // pollJobResult 轮询 GET /v1/jobs/{job_id} 直到完成，返回 TaskResult
-func (p *Processor) pollJobResult(jobID string) (*models.TaskResult, error) {
+func (p *Processor) pollJobResult(ctx context.Context, jobID string) (*models.TaskResult, error) {
 	jobURL := fmt.Sprintf("%s/v1/jobs/%s", p.WorkerEndpoint, jobID)
-	
+
 	timeoutDuration := 30 * time.Minute
 	timeout := time.After(timeoutDuration)
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
+	httpClient := &http.Client{} // 可配置 Transport/Timeout
+
 	for {
 		select {
 		case <-timeout:
 			return nil, fmt.Errorf("polling timeout")
+		case <-ctx.Done():
+			return nil, fmt.Errorf("polling canceled: %v", ctx.Err())
 		case <-ticker.C:
-			resp, err := http.Get(jobURL)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
 			if err != nil {
+				log.Printf("创建请求失败: %v", err)
+				continue
+			}
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				// 如果是 ctx 取消导致的 err，会在上面的 <-ctx.Done() 捕获
 				log.Printf("轮询网络错误(重试中): %v", err)
 				continue
 			}
-			
-			// 模型端返回完整的 Task 对象
+
 			var taskResp models.Task
 			if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
 				resp.Body.Close()
@@ -311,77 +393,76 @@ func (p *Processor) pollJobResult(jobID string) (*models.TaskResult, error) {
 			if status == models.TaskStatusSuccess || status == "success" || status == "completed" || status == "succeeded" {
 				return &taskResp.Result, nil
 			}
-
 			if status == models.TaskStatusFailed || status == "error" {
 				return nil, fmt.Errorf("worker reported failure: %s", taskResp.Error)
 			}
-			// 继续轮询
+			// 其他状态继续轮询
 		}
 	}
 }
 
 func (p *Processor) handleStoryboardResult(projectID string, result *models.TaskResult) error {
 	if result.ResourceUrl == "" {
-        return fmt.Errorf("storyboard result missing ResourceUrl")
-    }
+		return fmt.Errorf("storyboard result missing ResourceUrl")
+	}
 
-    log.Printf("下载分镜 JSON: %s", result.ResourceUrl)
-    resp, err := http.Get(result.ResourceUrl)
-    if err != nil {
-        return fmt.Errorf("下载分镜 JSON 失败: %v", err)
-    }
-    defer resp.Body.Close()
+	log.Printf("下载分镜 JSON: %s", result.ResourceUrl)
+	resp, err := http.Get(result.ResourceUrl)
+	if err != nil {
+		return fmt.Errorf("下载分镜 JSON 失败: %v", err)
+	}
+	defer resp.Body.Close()
 
-    if resp.StatusCode != http.StatusOK {
-        return fmt.Errorf("下载分镜 JSON 状态码: %d", resp.StatusCode)
-    }
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载分镜 JSON 状态码: %d", resp.StatusCode)
+	}
 	var storyboardData struct {
-        Shots []struct {
-            Title       string `json:"title"`
-            Description string `json:"description"`
-            Prompt      string `json:"prompt"`
-            Order       int    `json:"order,omitempty"`
+		Shots []struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Prompt      string `json:"prompt"`
+			Order       int    `json:"order,omitempty"`
 			Transition  string `json:"transition,omitempty"`
-        } `json:"shots"`
-    }
+		} `json:"shots"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&storyboardData); err != nil {
-        return fmt.Errorf("解析分镜 JSON 失败: %v", err)
-    }
+		return fmt.Errorf("解析分镜 JSON 失败: %v", err)
+	}
 
-    if len(storyboardData.Shots) == 0 {
-        return fmt.Errorf("分镜 JSON 中没有 shots 数据")
-    }
+	if len(storyboardData.Shots) == 0 {
+		return fmt.Errorf("分镜 JSON 中没有 shots 数据")
+	}
 
 	var shotsToCreate []models.Shot
-    for i, shot := range storyboardData.Shots {
-        order := shot.Order
-        if order == 0 {
-            order = i + 1
-        }
+	for i, shot := range storyboardData.Shots {
+		order := shot.Order
+		if order == 0 {
+			order = i + 1
+		}
 
-        newShot := models.Shot{
-            ID:          uuid.NewString(),
-            ProjectId:   projectID,
+		newShot := models.Shot{
+			ID:          uuid.NewString(),
+			ProjectId:   projectID,
 			Order:       order,
-            Title:       shot.Title,
-            Description: shot.Description,
-            Prompt:      shot.Prompt,
-            Status:      models.ShotStatusPending,
-			ImagePath: 	"",
-			AudioPath: 	"",
-			Transition: 	shot.Transition,
-            CreatedAt:   time.Now(),
-            UpdatedAt:   time.Now(),
-        }
-        shotsToCreate = append(shotsToCreate, newShot)
-    }
+			Title:       shot.Title,
+			Description: shot.Description,
+			Prompt:      shot.Prompt,
+			Status:      models.ShotStatusPending,
+			ImagePath:   "",
+			AudioPath:   "",
+			Transition:  shot.Transition,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		shotsToCreate = append(shotsToCreate, newShot)
+	}
 
 	// 4. 批量插入数据库
-    if len(shotsToCreate) > 0 {
-        if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
-            return fmt.Errorf("批量创建分镜失败: %v", err)
-        }
-    }
+	if len(shotsToCreate) > 0 {
+		if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
+			return fmt.Errorf("批量创建分镜失败: %v", err)
+		}
+	}
 	log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
 	return nil
 }
@@ -415,6 +496,7 @@ func (p *Processor) handleTTSResult(shotId string, result *models.TaskResult) er
 		"updated_at": time.Now(),
 	}).Error
 }
+
 // 处理视频生成结果 -> 更新 VideoUrl
 func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) error {
 	objectName := fmt.Sprintf("shots/%s/video.mp4", shotID)
@@ -435,8 +517,8 @@ func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) 
 func processResourceToMinIO(result *models.TaskResult, objectName string) (string, error) {
 	resourceUrl := result.ResourceUrl
 	if resourceUrl == "" {
-        return "", fmt.Errorf("resourceUrl is empty")
-    }
+		return "", fmt.Errorf("resourceUrl is empty")
+	}
 	return downloadAndUploadToMinIO(resourceUrl, objectName)
 }
 
