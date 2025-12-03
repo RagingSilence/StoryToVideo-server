@@ -376,45 +376,10 @@ func (p *Processor) handleStoryboardResult(projectID string, result *models.Task
 
 // 处理图像生成结果 -> 更新 ImagePath
 func (p *Processor) handleImageResult(shotID string, result *models.TaskResult) error {
-	var finalURL string
-	var err error
 	objectName := fmt.Sprintf("shots/%s/image.png", shotID)
-
-	// 优先使用 ResourceUrl
-	if result.ResourceUrl != "" {
-		finalURL, err = downloadAndUploadToMinIO(result.ResourceUrl, objectName)
-		if err != nil {
-			log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
-			finalURL = result.ResourceUrl
-		}
-	} else if result.Data != nil {
-		// 从 Data 中获取图片数据 (Base64 或 URL)
-		if imageData, ok := result.Data["image"].(string); ok && imageData != "" {
-			if strings.HasPrefix(imageData, "http://") || strings.HasPrefix(imageData, "https://") {
-				finalURL, err = downloadAndUploadToMinIO(imageData, objectName)
-				if err != nil {
-					log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
-					finalURL = imageData
-				}
-			} else {
-				// Base64 格式
-				finalURL, err = uploadBase64ToMinIO(imageData, objectName)
-				if err != nil {
-					return fmt.Errorf("上传 Base64 图片失败: %v", err)
-				}
-			}
-		} else if imageURL, ok := result.Data["image_url"].(string); ok && imageURL != "" {
-			finalURL, err = downloadAndUploadToMinIO(imageURL, objectName)
-			if err != nil {
-				log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
-				finalURL = imageURL
-			}
-		}
-	}
-
-	if finalURL == "" {
-		log.Printf("[DEBUG] handleImageResult: ResourceUrl=%s, Data=%+v", result.ResourceUrl, result.Data)
-		return fmt.Errorf("no image data found in result")
+	finalURL, err := processResourceToMinIO(result, objectName)
+	if err != nil {
+		return fmt.Errorf("处理图片资源失败: %v", err)
 	}
 
 	shot, err := models.GetShotByIDGorm(p.DB, shotID)
@@ -426,28 +391,13 @@ func (p *Processor) handleImageResult(shotID string, result *models.TaskResult) 
 }
 
 func (p *Processor) handleTTSResult(shotId string, result *models.TaskResult) error {
-	var audioURL string
-
-	// 优先使用 ResourceUrl
-	if result.ResourceUrl != "" {
-		audioURL = result.ResourceUrl
-	} else if result.Data != nil {
-		if url, ok := result.Data["audio_url"].(string); ok {
-			audioURL = url
-		}
-	}
-
-	if audioURL == "" {
-		return fmt.Errorf("no audio_url in result")
-	}
-
-	// 转存到自己的 MinIO/TOS
-	finalURL, err := downloadAndUploadToMinIO(audioURL, fmt.Sprintf("shots/%s/audio.mp3", shotId))
+	objectName := fmt.Sprintf("shots/%s/audio.mp3", shotId)
+	finalURL, err := processResourceToMinIO(result, objectName)
 	if err != nil {
-		return err
+		return fmt.Errorf("处理音频资源失败: %v", err)
 	}
 
-	// 更新数据库
+	log.Printf("音频上传成功: %s", finalURL)
 	return p.DB.Model(&models.Shot{}).Where("id = ?", shotId).Updates(map[string]interface{}{
 		"audio_path": finalURL,
 		"updated_at": time.Now(),
@@ -455,28 +405,13 @@ func (p *Processor) handleTTSResult(shotId string, result *models.TaskResult) er
 }
 // 处理视频生成结果 -> 更新 VideoUrl
 func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) error {
-	var videoURL string
-
-	// 优先使用 ResourceUrl
-	if result.ResourceUrl != "" {
-		videoURL = result.ResourceUrl
-	} else if result.Data != nil {
-		if url, ok := result.Data["video_url"].(string); ok {
-			videoURL = url
-		}
-	}
-
-	if videoURL == "" {
-		return fmt.Errorf("missing video_url in result")
-	}
-
-	// 下载并上传到 MinIO
-	finalURL, err := downloadAndUploadToMinIO(videoURL, fmt.Sprintf("shots/%s/video.mp4", shotID))
+	objectName := fmt.Sprintf("shots/%s/video.mp4", shotID)
+	finalURL, err := processResourceToMinIO(result, objectName)
 	if err != nil {
-		log.Printf("上传到 MinIO 失败，使用原始 URL: %v", err)
-		finalURL = videoURL
+		return fmt.Errorf("处理视频资源失败: %v", err)
 	}
 
+	log.Printf("视频上传成功: %s", finalURL)
 	return p.DB.Model(&models.Shot{}).Where("id = ?", shotID).Updates(map[string]interface{}{
 		"video_url":  finalURL,
 		"status":     models.ShotStatusCompleted,
@@ -484,19 +419,48 @@ func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) 
 	}).Error
 }
 
+// processResourceToMinIO 通用资源处理函数
+// 自动判断 ResourceUrl 是 URL 还是 Base64，处理后上传到 MinIO
+func processResourceToMinIO(result *models.TaskResult, objectName string) (string, error) {
+	resourceData := result.ResourceUrl
+
+	// 如果 ResourceUrl 为空，尝试从 Data 中获取
+	if resourceData == "" && result.Data != nil {
+		// 按优先级尝试不同的 key
+		for _, key := range []string{"url", "image", "image_url", "audio", "audio_url", "video", "video_url", "data"} {
+			if v, ok := result.Data[key].(string); ok && v != "" {
+				resourceData = v
+				break
+			}
+		}
+	}
+
+	if resourceData == "" {
+		return "", fmt.Errorf("no resource data found (ResourceUrl and Data are empty)")
+	}
+
+	// 判断是 URL 还是 Base64
+	if strings.HasPrefix(resourceData, "http://") || strings.HasPrefix(resourceData, "https://") {
+		// 是 URL，下载后上传
+		return downloadAndUploadToMinIO(resourceData, objectName)
+	}
+
+	// 假设是 Base64 数据
+	return uploadBase64ToMinIO(resourceData, objectName)
+}
+
 func downloadAndUploadToMinIO(sourceURL, objectName string) (string, error) {
-    // 1. 下载文件
-    resp, err := http.Get(sourceURL)
-    if err != nil {
-        return "", fmt.Errorf("download failed: %v", err)
-    }
-    defer resp.Body.Close()
+	resp, err := http.Get(sourceURL)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %v", err)
+	}
+	defer resp.Body.Close()
 
-    if resp.StatusCode != http.StatusOK {
-        return "", fmt.Errorf("download status: %d", resp.StatusCode)
-    }
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download status: %d", resp.StatusCode)
+	}
 
-    return UploadToMinIO(resp.Body, objectName, resp.ContentLength)
+	return UploadToMinIO(resp.Body, objectName, resp.ContentLength)
 }
 
 // uploadBase64ToMinIO 将 Base64 编码的图片解码后上传到 MinIO
