@@ -24,7 +24,6 @@ type Shot struct {
     ImagePath   string    `json:"imagePath"`
     AudioPath   string    `json:"audioPath"`
     Transition  string    `json:"transition"`
-    VideoUrl    string    `json:"videoUrl"`
     CreatedAt   time.Time `json:"createdAt"`
     UpdatedAt   time.Time `json:"updatedAt"`
 }

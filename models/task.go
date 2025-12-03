@@ -87,15 +87,6 @@ type TTSParams struct {
 	Lang       string `json:"lang"`
 	SampleRate int    `json:"sample_rate"`
 	Format     string `json:"format"`
-	Text       string `json:"text,omitempty"` // 补充：TTS 通常需要输入文本
-}
-
-type VideoParameters struct {
-	Resolution string `json:"resolution,omitempty"` // e.g. "1920x1080"
-	FPS        int    `json:"fps,omitempty"`
-	Format     string `json:"format,omitempty"`  // e.g. "mp4"
-	Bitrate    int    `json:"bitrate,omitempty"` // kbps
-	// 可添加更多渲染/转码参数
 }
 
 // TaskResult 仅保留最小资源定位信息
@@ -103,7 +94,6 @@ type TaskResult struct {
 	ResourceType string                 `json:"resource_type"` // e.g., "image", "audio", "json"
 	ResourceId   string                 `json:"resource_id"`
 	ResourceUrl  string                 `json:"resource_url"`
-	Data         map[string]interface{} `json:"data,omitempty"`
 }
 
 // 实现 driver.Valuer 接口: Go Struct -> JSON String (存入数据库)
@@ -155,7 +145,6 @@ type TaskVideoResult struct {
 	TotalTime  string `json:"total_time"`
 }
 
-// ...existing code...
 func (t *Task) UpdateStatus(db *gorm.DB, status string, result interface{}, errMsg string) error {
 	updates := map[string]interface{}{
 		"status":     status,

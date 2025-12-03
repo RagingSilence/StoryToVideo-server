@@ -118,7 +118,7 @@ func UploadToMinIO(reader io.Reader, objectName string, size int64) (string, err
 	}
 
 	// 生成预签名 URL（24小时有效期）
-	expiry := time.Hour * 24
+	expiry := time.Hour * 72
 	reqParams := make(url.Values)
 	
 	presignedURL, err := MinioClient.PresignedGetObject(ctx, bucketName, objectName, expiry, reqParams)

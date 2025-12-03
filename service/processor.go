@@ -4,13 +4,10 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"StoryToVideo-server/config"
@@ -147,13 +144,13 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 // ============================================================================
 
 // dispatchWorkerRequest 发送 POST 请求，返回 job_id
+//保留switch结构以便未来根据 task.Type 构建不同请求体，目前均发送到 /v1/generate
 func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	var apiPath string
-	var reqBody map[string]interface{}
+	var specificParams map[string]interface{}
 
 	switch task.Type {
 	case models.TaskTypeStoryboard: // 故事 -> 分镜
-		apiPath = "/v1/llm/storyboard"
 		var project models.Project
 		if err := p.DB.First(&project, "id = ?", task.ProjectId).Error; err != nil {
 			return "", fmt.Errorf("project not found: %v", err)
@@ -163,62 +160,42 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 			return "", fmt.Errorf("missing shot_defaults parameters")
 		}
 
-		// 构造请求体：基于现有数据结构
-		reqBody = map[string]interface{}{
-			"story_id":     project.ID,
-			"story_text":   params.StoryText,
+		specificParams = map[string]interface{}{
+			"shot_count": 	params.ShotCount,
 			"style":        params.Style,
-			"target_shots": params.ShotCount,
-			"lang":         "zh", // 默认中文，可扩展
+			"story_text":   params.StoryText,
 		}
 
 	case models.TaskTypeShotImage, "regenerate_shot":
 		// 文生图：生成关键帧
-		apiPath = "/v1/image/generate"
 		params := task.Parameters.Shot
 		if params == nil {
 			return "", fmt.Errorf("missing shot parameters")
 		}
 
-		width, _ := strconv.Atoi(params.ImageWidth)
-		if width == 0 { width = 1024 }
-		height, _ := strconv.Atoi(params.ImageHeight)
-		if height == 0 { height = 576 }
-		sizeStr := fmt.Sprintf("%dx%d", width, height)
-
-		reqBody = map[string]interface{}{
-			"shot_id":         params.ShotId,
-			"prompt":          params.Prompt,
-			"negative_prompt": "blurry, lowres, bad anatomy, text, watermark",
-			"style":           params.Style,
-			"size":            sizeStr,
-			"model":           "sd-turbo", // 默认模型
+		specificParams = map[string]interface{}{
+			"transition":		params.Transition,
+			"shot_id":          params.ShotId,
+			"image_width":      params.ImageWidth,
+			"image_height":     params.ImageHeight,
+			"prompt":           params.Prompt,
 		}
 
 	case models.TaskTypeProjectAudio:
 		// TTS 生成
-		apiPath = "/v1/audio/generate"
 		params := task.Parameters.TTS
 		if params == nil {
 			return "", fmt.Errorf("missing tts parameters")
 		}
-		text := params.Text
-		if text == "" && task.ShotId != "" {
-			shot, _ := models.GetShotByIDGorm(p.DB, task.ShotId)
-			if shot != nil {
-				text = shot.Description
-			}
-		}
-		reqBody = map[string]interface{}{
-			"text":        text,
+
+		specificParams = map[string]interface{}{
 			"voice":       params.Voice,
-			"language":    params.Lang,
+			"lang":   		params.Lang,
 			"sample_rate": params.SampleRate,
 			"format":      params.Format,
 		}
 
 	case models.TaskTypeVideoGen: // 图 -> 视频
-		apiPath = "/v1/video/generate"
 		parameters := task.Parameters.Video
 		if parameters == nil {
 			return "", fmt.Errorf("missing video parameters")
@@ -238,23 +215,11 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		resolution := "1280x720"
 		if parameters.Resolution != "" { resolution = parameters.Resolution }
 
-		reqBody = map[string]interface{}{
-			"shot_id":         shot.ID,
-			"image_url":       shot.ImagePath, 
-			"duration_sec":    4,
-			"fps":             fps,
+		specificParams = map[string]interface{}{
 			"resolution":      resolution,
-			"model":           "svd-img2vid",
-			"transition":      shot.Transition,
-			"motion_strength": 0.7,
-		}
-
-		// 如果分镜有音频，传给视频生成接口
-		if shot.AudioPath != "" {
-			reqBody["audio"] = map[string]interface{}{
-				"voiceover_url": shot.AudioPath,
-				"ducking": true,
-			}
+			"fps":             fps,
+			"format":          parameters.Format,
+			"bitrate":         parameters.Bitrate,
 		}
 
 	default:
@@ -262,6 +227,24 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	}
 
 	// 发送 HTTP 请求
+	reqBody := map[string]interface{}{
+        "id":         			task.ID,
+        "project_id": 			task.ProjectId,
+        "type":      			task.Type,
+        "status":    			task.Status,
+        "progress":   			task.Progress,
+        "message":    			task.Message,
+		"result":     			task.Result,
+		"error":	  			task.Error,
+		"parameters":			specificParams,
+		"estimated_duration":	task.EstimatedDuration,
+		"started_at":			task.StartedAt,
+		"finished_at":			task.FinishedAt,
+        "created_at": 			task.CreatedAt,
+        "updated_at": 			task.UpdatedAt,
+    }
+
+	apiPath = "/v1/generate"
 	fullURL := p.WorkerEndpoint + apiPath
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -293,6 +276,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	}
 	return "", fmt.Errorf("response missing 'id'")
 }
+
 
 // pollJobResult 轮询 GET /v1/jobs/{job_id} 直到完成，返回 TaskResult
 func (p *Processor) pollJobResult(jobID string) (*models.TaskResult, error) {
@@ -337,39 +321,67 @@ func (p *Processor) pollJobResult(jobID string) (*models.TaskResult, error) {
 }
 
 func (p *Processor) handleStoryboardResult(projectID string, result *models.TaskResult) error {
-	// 从 TaskResult.Data 中获取 shots 数组
-	shotsData, ok := result.Data["shots"]
-	if !ok {
-		return fmt.Errorf("missing 'shots' in result.Data")
-	}
-	shotsList, ok := shotsData.([]interface{})
-	if !ok {
-		return fmt.Errorf("'shots' is not a list")
-	}
+	if result.ResourceUrl == "" {
+        return fmt.Errorf("storyboard result missing ResourceUrl")
+    }
+
+    log.Printf("下载分镜 JSON: %s", result.ResourceUrl)
+    resp, err := http.Get(result.ResourceUrl)
+    if err != nil {
+        return fmt.Errorf("下载分镜 JSON 失败: %v", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        return fmt.Errorf("下载分镜 JSON 状态码: %d", resp.StatusCode)
+    }
+	var storyboardData struct {
+        Shots []struct {
+            Title       string `json:"title"`
+            Description string `json:"description"`
+            Prompt      string `json:"prompt"`
+            Order       int    `json:"order,omitempty"`
+			Transition  string `json:"transition,omitempty"`
+        } `json:"shots"`
+    }
+	if err := json.NewDecoder(resp.Body).Decode(&storyboardData); err != nil {
+        return fmt.Errorf("解析分镜 JSON 失败: %v", err)
+    }
+
+    if len(storyboardData.Shots) == 0 {
+        return fmt.Errorf("分镜 JSON 中没有 shots 数据")
+    }
 
 	var shotsToCreate []models.Shot
-	for i, item := range shotsList {
-		shotMap, _ := item.(map[string]interface{})
+    for i, shot := range storyboardData.Shots {
+        order := shot.Order
+        if order == 0 {
+            order = i + 1
+        }
 
-		newShot := models.Shot{
-			ID:          uuid.NewString(),
-			ProjectId:   projectID,
-			Title:       getString(shotMap, "title"),
-			Description: getString(shotMap, "description"),
-			Prompt:      getString(shotMap, "prompt"),
-			Order:       i + 1,
-			Status:      models.ShotStatusPending,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-		shotsToCreate = append(shotsToCreate, newShot)
-	}
+        newShot := models.Shot{
+            ID:          uuid.NewString(),
+            ProjectId:   projectID,
+			Order:       order,
+            Title:       shot.Title,
+            Description: shot.Description,
+            Prompt:      shot.Prompt,
+            Status:      models.ShotStatusPending,
+			ImagePath: 	"",
+			AudioPath: 	"",
+			Transition: 	shot.Transition,
+            CreatedAt:   time.Now(),
+            UpdatedAt:   time.Now(),
+        }
+        shotsToCreate = append(shotsToCreate, newShot)
+    }
 
-	if len(shotsToCreate) > 0 {
-		if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
-			return err
-		}
-	}
+	// 4. 批量插入数据库
+    if len(shotsToCreate) > 0 {
+        if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
+            return fmt.Errorf("批量创建分镜失败: %v", err)
+        }
+    }
 	log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
 	return nil
 }
@@ -386,7 +398,7 @@ func (p *Processor) handleImageResult(shotID string, result *models.TaskResult) 
 	if err != nil {
 		return err
 	}
-	log.Printf("图片上传成功: %s", finalURL)
+	log.Printf("图片id %s上传成功: %s", shotID, finalURL)
 	return shot.UpdateImage(p.DB, finalURL)
 }
 
@@ -420,33 +432,12 @@ func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) 
 }
 
 // processResourceToMinIO 通用资源处理函数
-// 自动判断 ResourceUrl 是 URL 还是 Base64，处理后上传到 MinIO
 func processResourceToMinIO(result *models.TaskResult, objectName string) (string, error) {
-	resourceData := result.ResourceUrl
-
-	// 如果 ResourceUrl 为空，尝试从 Data 中获取
-	if resourceData == "" && result.Data != nil {
-		// 按优先级尝试不同的 key
-		for _, key := range []string{"url", "image", "image_url", "audio", "audio_url", "video", "video_url", "data"} {
-			if v, ok := result.Data[key].(string); ok && v != "" {
-				resourceData = v
-				break
-			}
-		}
-	}
-
-	if resourceData == "" {
-		return "", fmt.Errorf("no resource data found (ResourceUrl and Data are empty)")
-	}
-
-	// 判断是 URL 还是 Base64
-	if strings.HasPrefix(resourceData, "http://") || strings.HasPrefix(resourceData, "https://") {
-		// 是 URL，下载后上传
-		return downloadAndUploadToMinIO(resourceData, objectName)
-	}
-
-	// 假设是 Base64 数据
-	return uploadBase64ToMinIO(resourceData, objectName)
+	resourceUrl := result.ResourceUrl
+	if resourceUrl == "" {
+        return "", fmt.Errorf("resourceUrl is empty")
+    }
+	return downloadAndUploadToMinIO(resourceUrl, objectName)
 }
 
 func downloadAndUploadToMinIO(sourceURL, objectName string) (string, error) {
@@ -461,31 +452,6 @@ func downloadAndUploadToMinIO(sourceURL, objectName string) (string, error) {
 	}
 
 	return UploadToMinIO(resp.Body, objectName, resp.ContentLength)
-}
-
-// uploadBase64ToMinIO 将 Base64 编码的图片解码后上传到 MinIO
-func uploadBase64ToMinIO(base64Data, objectName string) (string, error) {
-    // 移除可能的 data URI 前缀 (如 "data:image/png;base64,")
-    if idx := strings.Index(base64Data, ","); idx != -1 {
-        base64Data = base64Data[idx+1:]
-    }
-    
-    // 解码 Base64
-    imageData, err := base64.StdEncoding.DecodeString(base64Data)
-    if err != nil {
-        // 尝试 RawStdEncoding (无 padding)
-        imageData, err = base64.RawStdEncoding.DecodeString(base64Data)
-        if err != nil {
-            return "", fmt.Errorf("base64 decode failed: %v", err)
-        }
-    }
-    
-    log.Printf("Base64 解码成功，图片大小: %d bytes", len(imageData))
-    
-    // 使用 bytes.Reader 创建 io.Reader
-    reader := bytes.NewReader(imageData)
-    
-    return UploadToMinIO(reader, objectName, int64(len(imageData)))
 }
 
 // 工具函数：安全获取 string
