@@ -317,7 +317,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		"updated_at":         task.UpdatedAt,
 	}
 
-	apiPath = "/v1/generate"
+	apiPath = "/v1/api/generate"
 	fullURL := p.WorkerEndpoint + apiPath
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
