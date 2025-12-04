@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -23,7 +24,7 @@ func CancelWorkerJob(jobID string) error {
 	if jobID == "" {
 		return fmt.Errorf("empty job id")
 	}
-	url := config.AppConfig.Worker.Addr + "/v1/api/jobs/" + jobID
+	url := config.AppConfig.Worker.Addr + "/v1/jobs/" + jobID
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
 		return fmt.Errorf("create delete request failed: %w", err)
@@ -317,7 +318,7 @@ func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 		"updated_at":         task.UpdatedAt,
 	}
 
-	apiPath = "/v1/api/generate"
+	apiPath = "/v1/generate"
 	fullURL := p.WorkerEndpoint + apiPath
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -381,11 +382,87 @@ func (p *Processor) pollJobResult(ctx context.Context, jobID string) (*models.Ta
 				continue
 			}
 
+			// var taskResp models.Task
+			// bodyBytes, err := io.ReadAll(resp.Body)
+			// if err != nil {
+			// 	resp.Body.Close()
+			// 	log.Printf("读取响应体失败: %v", err)
+			// 	continue
+			// }
+			// if err := json.Unmarshal(bodyBytes, &taskResp); err != nil {
+			// 	bodyStr := string(bodyBytes)
+			// 	if len(bodyStr) > 2000 {
+			// 		bodyStr = bodyStr[:2000] + "..."
+			// 	}
+			// 	log.Printf("解析响应失败: %v, body: %s", err, bodyStr)
+			// 	resp.Body.Close()
+			// 	continue
+			// }
+			// resp.Body.Close()
 			var taskResp models.Task
-			if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
 				resp.Body.Close()
-				log.Printf("解析响应失败: %v", err)
+				log.Printf("读取响应体失败: %v", err)
 				continue
+			}
+			// 改为先解到中间结构，时间字段用 *string 接收，避免直接解析到 time.Time 导致失败
+			var raw struct {
+				ID                string                 `json:"id"`
+				ProjectId         *string                `json:"projectId"`
+				ShotId            *string                `json:"shotId"`
+				Type              string                 `json:"type"`
+				Status            string                 `json:"status"`
+				Progress          int                    `json:"progress"`
+				Message           string                 `json:"message"`
+				Parameters        map[string]interface{} `json:"parameters"`
+				Result            models.TaskResult      `json:"result"`
+				Error             string                 `json:"error"`
+				EstimatedDuration int                    `json:"estimatedDuration"`
+				StartedAt         *string                `json:"startedAt"`
+				FinishedAt        *string                `json:"finishedAt"`
+				CreatedAt         *string                `json:"createdAt"`
+				UpdatedAt         *string                `json:"updatedAt"`
+			}
+			if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+				bodyStr := string(bodyBytes)
+				if len(bodyStr) > 2000 {
+					bodyStr = bodyStr[:2000] + "..."
+				}
+				log.Printf("解析响应失败: %v, body: %s", err, bodyStr)
+				resp.Body.Close()
+				continue
+			}
+			// helper: 兼容多种时间格式（带/不带时区）
+			parseTime := func(s *string) time.Time {
+				if s == nil || *s == "" {
+					return time.Time{}
+				}
+				layouts := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.999999", "2006-01-02T15:04:05"}
+				for _, l := range layouts {
+					if tm, err := time.Parse(l, *s); err == nil {
+						return tm
+					}
+				}
+				return time.Time{}
+			}
+			// 将 raw 转回 models.Task
+			taskResp = models.Task{
+				ID:                raw.ID,
+				ProjectId:         "",
+				ShotId:            "",
+				Type:              raw.Type,
+				Status:            raw.Status,
+				Progress:          raw.Progress,
+				Message:           raw.Message,
+				Parameters:        models.TaskParameters{}, // 若需要，可进一步从 raw.Parameters 解析
+				Result:            raw.Result,
+				Error:             raw.Error,
+				EstimatedDuration: raw.EstimatedDuration,
+				StartedAt:         parseTime(raw.StartedAt),
+				FinishedAt:        parseTime(raw.FinishedAt),
+				CreatedAt:         parseTime(raw.CreatedAt),
+				UpdatedAt:         parseTime(raw.UpdatedAt),
 			}
 			resp.Body.Close()
 
