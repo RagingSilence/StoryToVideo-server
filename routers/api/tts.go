@@ -67,5 +67,3 @@ func GenerateProjectTTS(c *gin.Context) {
         "project_id": projectID,
     })
 }
-
-// ...existing code...

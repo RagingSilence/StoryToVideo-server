@@ -228,31 +228,30 @@ func DeleteShot(c *gin.Context) {
 func GenerateShotVideo(c *gin.Context) {
 	projectID := c.Param("project_id")
 
-	var req struct {
-		ShotID string `json:"shot_id" form:"shot_id"`
-		FPS    int    `json:"fps" form:"fps"`
-	}
-	// 允许从 Query 或 Body 绑定
-	if err := c.ShouldBind(&req); err != nil {
-	}
+	// var req struct {
+	// 	ShotID string `json:"shot_id" form:"shot_id"`
+	// 	FPS    int    `json:"fps" form:"fps"`
+	// }
+	// // 允许从 Query 或 Body 绑定
+	// if err := c.ShouldBind(&req); err != nil {
+	// }
 
-	if req.ShotID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "shot_id is required"})
-		return
-	}
+	// if req.ShotID == "" {
+	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "shot_id is required"})
+	// 	return
+	// }
 
 	// 1. 创建任务对象
 	task := models.Task{
 		ID:        uuid.NewString(),
 		ProjectId: projectID,
-		ShotId:    req.ShotID,
 		Type:      models.TaskTypeVideoGen,
 		Status:    models.TaskStatusPending,
 		Progress:  0,
 		Message:   "视频生成任务排队中",
 		Parameters: models.TaskParameters{
 			Video: &models.VideoParams{
-				FPS:        req.FPS, // 默认值或从 req 获取
+				FPS:        30, // 默认值或从 req 获取
 				Resolution: "1280x720",
 			},
 			Shot: &models.ShotParams{},
@@ -272,11 +271,9 @@ func GenerateShotVideo(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "任务入队失败"})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "视频生成任务已创建",
 		"project_id": projectID,
-		"shot_id":    req.ShotID,
 		"task_id":    task.ID,
 	})
 }

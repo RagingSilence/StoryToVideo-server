@@ -32,9 +32,10 @@ func CreateProject(c *gin.Context) {
 	}
 
 	// 默认分镜数量
-	if req.ShotCount <= 0 {
-		req.ShotCount = 5
-	}
+	// if req.ShotCount <= 0 {
+	// 	req.ShotCount = 5
+	// }
+	req.ShotCount = 6
 
 	project := models.Project{
 		ID:          uuid.NewString(),
