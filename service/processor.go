@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"net/url"
 
 	"StoryToVideo-server/config"
 	"StoryToVideo-server/models"
@@ -217,88 +218,111 @@ func (p *Processor) HandleGenerateTask(ctx context.Context, t *asynq.Task) error
 // 保留switch结构以便未来根据 task.Type 构建不同请求体，目前均发送到 /v1/generate
 func (p *Processor) dispatchWorkerRequest(task *models.Task) (string, error) {
 	var apiPath string
-	var specificParams map[string]interface{}
+	// var specificParams map[string]interface{}
 
-	switch task.Type {
-	case models.TaskTypeStoryboard: // 故事 -> 分镜
-		var project models.Project
-		if err := p.DB.First(&project, "id = ?", task.ProjectId).Error; err != nil {
-			return "", fmt.Errorf("project not found: %v", err)
-		}
-		params := task.Parameters.ShotDefaults
-		if params == nil {
-			return "", fmt.Errorf("missing shot_defaults parameters")
-		}
+	// switch task.Type {
+	// case models.TaskTypeStoryboard: // 故事 -> 分镜
+	// 	var project models.Project
+	// 	if err := p.DB.First(&project, "id = ?", task.ProjectId).Error; err != nil {
+	// 		return "", fmt.Errorf("project not found: %v", err)
+	// 	}
+	// 	params := task.Parameters.ShotDefaults
+	// 	if params == nil {
+	// 		return "", fmt.Errorf("missing shot_defaults parameters")
+	// 	}
 
-		specificParams = map[string]interface{}{
-			"shot_count": params.ShotCount,
-			"style":      params.Style,
-			"story_text": params.StoryText,
-		}
+	// 	specificParams = map[string]interface{}{
+	// 		"shot_count": params.ShotCount,
+	// 		"style":      params.Style,
+	// 		"story_text": params.StoryText,
+	// 	}
 
-	case models.TaskTypeShotImage, "regenerate_shot":
-		// 文生图：生成关键帧
-		params := task.Parameters.Shot
-		if params == nil {
-			return "", fmt.Errorf("missing shot parameters")
-		}
+	// case models.TaskTypeShotImage, "regenerate_shot":
+	// 	// 文生图：生成关键帧
+	// 	params := task.Parameters.Shot
+	// 	if params == nil {
+	// 		return "", fmt.Errorf("missing shot parameters")
+	// 	}
 
-		specificParams = map[string]interface{}{
-			"transition":   params.Transition,
-			"shot_id":      params.ShotId,
-			"image_width":  params.ImageWidth,
-			"image_height": params.ImageHeight,
-			"prompt":       params.Prompt,
-		}
+	// 	specificParams = map[string]interface{}{
+	// 		"transition":   params.Transition,
+	// 		"shot_id":      params.ShotId,
+	// 		"image_width":  params.ImageWidth,
+	// 		"image_height": params.ImageHeight,
+	// 		"prompt":       params.Prompt,
+	// 	}
 
-	case models.TaskTypeProjectAudio:
-		// TTS 生成
-		params := task.Parameters.TTS
-		if params == nil {
-			return "", fmt.Errorf("missing tts parameters")
-		}
+	// case models.TaskTypeProjectAudio:
+	// 	// TTS 生成
+	// 	params := task.Parameters.TTS
+	// 	if params == nil {
+	// 		return "", fmt.Errorf("missing tts parameters")
+	// 	}
 
-		specificParams = map[string]interface{}{
-			"voice":       params.Voice,
-			"lang":        params.Lang,
-			"sample_rate": params.SampleRate,
-			"format":      params.Format,
-		}
+	// 	specificParams = map[string]interface{}{
+	// 		"voice":       params.Voice,
+	// 		"lang":        params.Lang,
+	// 		"sample_rate": params.SampleRate,
+	// 		"format":      params.Format,
+	// 	}
 
-	case models.TaskTypeVideoGen: // 图 -> 视频
-		parameters := task.Parameters.Video
-		if parameters == nil {
-			return "", fmt.Errorf("missing video parameters")
-		}
+	// case models.TaskTypeVideoGen: // 图 -> 视频
+	// 	parameters := task.Parameters.Video
+	// 	if parameters == nil {
+	// 		return "", fmt.Errorf("missing video parameters")
+	// 	}
 
-		shot, err := models.GetShotByIDGorm(p.DB, task.ShotId)
-		if err != nil {
-			return "", fmt.Errorf("shot not found")
-		}
-		if shot.ImagePath == "" {
-			return "", fmt.Errorf("shot has no image_path (unable to gen video)")
-		}
+	// 	shot, err := models.GetShotByIDGorm(p.DB, task.ShotId)
+	// 	if err != nil {
+	// 		return "", fmt.Errorf("shot not found")
+	// 	}
+	// 	if shot.ImagePath == "" {
+	// 		return "", fmt.Errorf("shot has no image_path (unable to gen video)")
+	// 	}
 
-		fps := 24
-		if parameters.FPS != 0 {
-			fps = parameters.FPS
-		}
+	// 	fps := 24
+	// 	if parameters.FPS != 0 {
+	// 		fps = parameters.FPS
+	// 	}
 
-		resolution := "1280x720"
-		if parameters.Resolution != "" {
-			resolution = parameters.Resolution
-		}
+	// 	resolution := "1280x720"
+	// 	if parameters.Resolution != "" {
+	// 		resolution = parameters.Resolution
+	// 	}
 
-		specificParams = map[string]interface{}{
-			"resolution": resolution,
-			"fps":        fps,
-			"format":     parameters.Format,
-			"bitrate":    parameters.Bitrate,
-		}
+	// 	specificParams = map[string]interface{}{
+	// 		"resolution": resolution,
+	// 		"fps":        fps,
+	// 		"format":     parameters.Format,
+	// 		"bitrate":    parameters.Bitrate,
+	// 	}
 
-	default:
-		return "", fmt.Errorf("unsupported task type: %s", task.Type)
-	}
+	// default:
+	// 	return "", fmt.Errorf("unsupported task type: %s", task.Type)
+	// }
+
+	
+
+
+	specificParams := make(map[string]interface{})
+
+    if task.Parameters.ShotDefaults != nil {
+        specificParams["shot_defaults"] = task.Parameters.ShotDefaults
+    }
+    if task.Parameters.Shot != nil {
+        specificParams["shot"] = task.Parameters.Shot
+    }
+    if task.Parameters.TTS != nil {
+        specificParams["tts"] = task.Parameters.TTS
+    }
+    if task.Parameters.Video != nil {
+        specificParams["video"] = task.Parameters.Video
+    }
+    // 添加其他需要的参数，如 depends_on
+    if len(task.Parameters.DependsOn) > 0 {
+        specificParams["depends_on"] = task.Parameters.DependsOn
+    }
+			
 
 	// 发送 HTTP 请求
 	reqBody := map[string]interface{}{
@@ -479,84 +503,145 @@ func (p *Processor) pollJobResult(ctx context.Context, jobID string) (*models.Ta
 }
 
 func (p *Processor) handleStoryboardResult(projectID string, result *models.TaskResult) error {
-	if result.ResourceUrl == "" {
-		return fmt.Errorf("storyboard result missing ResourceUrl")
-	}
+	// if result.ResourceUrl == "" {
+	// 	return fmt.Errorf("storyboard result missing ResourceUrl")
+	// }
 
-	log.Printf("下载分镜 JSON: %s", result.ResourceUrl)
-	resp, err := http.Get(result.ResourceUrl)
-	if err != nil {
-		return fmt.Errorf("下载分镜 JSON 失败: %v", err)
-	}
-	defer resp.Body.Close()
+	// log.Printf("下载分镜 JSON: %s", result.ResourceUrl)
+	// resp, err := http.Get(result.ResourceUrl)
+	// if err != nil {
+	// 	return fmt.Errorf("下载分镜 JSON 失败: %v", err)
+	// }
+	// defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载分镜 JSON 状态码: %d", resp.StatusCode)
-	}
-	var storyboardData struct {
-		Shots []struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Prompt      string `json:"prompt"`
-			Order       int    `json:"order,omitempty"`
-			Transition  string `json:"transition,omitempty"`
-		} `json:"shots"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&storyboardData); err != nil {
-		return fmt.Errorf("解析分镜 JSON 失败: %v", err)
-	}
+	// if resp.StatusCode != http.StatusOK {
+	// 	return fmt.Errorf("下载分镜 JSON 状态码: %d", resp.StatusCode)
+	// }
+	// var storyboardData struct {
+	// 	Shots []struct {
+	// 		Title       string `json:"title"`
+	// 		Description string `json:"description"`
+	// 		Prompt      string `json:"prompt"`
+	// 		Order       int    `json:"order,omitempty"`
+	// 		Transition  string `json:"transition,omitempty"`
+	// 	} `json:"shots"`
+	// }
+	// if err := json.NewDecoder(resp.Body).Decode(&storyboardData); err != nil {
+	// 	return fmt.Errorf("解析分镜 JSON 失败: %v", err)
+	// }
 
-	if len(storyboardData.Shots) == 0 {
-		return fmt.Errorf("分镜 JSON 中没有 shots 数据")
-	}
+	// if len(storyboardData.Shots) == 0 {
+	// 	return fmt.Errorf("分镜 JSON 中没有 shots 数据")
+	// }
 
+	// var shotsToCreate []models.Shot
+	// for i, shot := range storyboardData.Shots {
+	// 	order := shot.Order
+	// 	if order == 0 {
+	// 		order = i + 1
+	// 	}
+
+	// 	newShot := models.Shot{
+	// 		ID:          uuid.NewString(),
+	// 		ProjectId:   projectID,
+	// 		Order:       order,
+	// 		Title:       shot.Title,
+	// 		Description: shot.Description,
+	// 		Prompt:      shot.Prompt,
+	// 		Status:      models.ShotStatusPending,
+	// 		ImagePath:   "",
+	// 		AudioPath:   "",
+	// 		Transition:  shot.Transition,
+	// 		CreatedAt:   time.Now(),
+	// 		UpdatedAt:   time.Now(),
+	// 	}
+	// 	shotsToCreate = append(shotsToCreate, newShot)
+	// }
+
+	// // 4. 批量插入数据库
+	// if len(shotsToCreate) > 0 {
+	// 	if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
+	// 		return fmt.Errorf("批量创建分镜失败: %v", err)
+	// 	}
+	// }
+	// log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
+	// return nil
+	if result.TaskShots == nil || len(result.TaskShots.GeneratedShots) == 0 {
+        return fmt.Errorf("分镜结果为空 (TaskShots is nil or empty)")
+    }
 	var shotsToCreate []models.Shot
-	for i, shot := range storyboardData.Shots {
-		order := shot.Order
-		if order == 0 {
-			order = i + 1
-		}
+    for i, shot := range result.TaskShots.GeneratedShots {
+        order := i + 1
 
-		newShot := models.Shot{
-			ID:          uuid.NewString(),
-			ProjectId:   projectID,
-			Order:       order,
-			Title:       shot.Title,
-			Description: shot.Description,
-			Prompt:      shot.Prompt,
-			Status:      models.ShotStatusPending,
-			ImagePath:   "",
-			AudioPath:   "",
-			Transition:  shot.Transition,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-		shotsToCreate = append(shotsToCreate, newShot)
-	}
+        newShot := models.Shot{
+            ID:          uuid.NewString(),//或者scene_id 作为shot的id
+            ProjectId:   projectID,
+            Order:       order,
+            Title:       shot.Title,
+            Description: shot.Narration, // 使用 narration 作为描述
+            Prompt:      shot.Prompt,
+            Status:      models.ShotStatusPending,
+            ImagePath:   shot.Path,
+            AudioPath:   "",
+            Transition:  "",
+            CreatedAt:   time.Now(),
+            UpdatedAt:   time.Now(),
+        }
+        shotsToCreate = append(shotsToCreate, newShot)
+    }
 
-	// 4. 批量插入数据库
-	if len(shotsToCreate) > 0 {
-		if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
-			return fmt.Errorf("批量创建分镜失败: %v", err)
-		}
-	}
-	log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
-	return nil
+    // 批量插入数据库
+    if len(shotsToCreate) > 0 {
+        if err := models.BatchCreateShots(p.DB, shotsToCreate); err != nil {
+            return fmt.Errorf("批量创建分镜失败: %v", err)
+        }
+    }
+    log.Printf("Successfully created %d shots for project %s", len(shotsToCreate), projectID)
+    return nil
+
 }
 
 // 处理图像生成结果 -> 更新 ImagePath
 func (p *Processor) handleImageResult(shotID string, result *models.TaskResult) error {
+	// objectName := fmt.Sprintf("shots/%s/image.png", shotID)
+	// finalURL, err := processResourceToMinIO(result, objectName)
+	// if err != nil {
+	// 	return fmt.Errorf("处理图片资源失败: %v", err)
+	// }
+
+	// shot, err := models.GetShotByIDGorm(p.DB, shotID)
+	// if err != nil {
+	// 	return err
+	// }
+	// log.Printf("图片id %s上传成功: %s", shotID, finalURL)
+	// return shot.UpdateImage(p.DB, finalURL)
+	var remotePath string
+	
+	// 从 TaskShots 中获取路径
+	if result.TaskShots != nil && len(result.TaskShots.GeneratedShots) > 0 {
+		remotePath = result.TaskShots.GeneratedShots[0].Path
+	}
+
+	if remotePath == "" {
+		return fmt.Errorf("图片路径为空")
+	}
+
+	// 构造下载 URL
+	downloadUrl := p.getWorkerFileUrl(remotePath)
+	log.Printf("正在从 Worker 下载图片: %s", downloadUrl)
+
 	objectName := fmt.Sprintf("shots/%s/image.png", shotID)
-	finalURL, err := processResourceToMinIO(result, objectName)
+
+	// http.Get(downloadUrl) -> MinIO PutObject
+	finalURL, err := downloadAndUploadToMinIO(downloadUrl, objectName)
 	if err != nil {
-		return fmt.Errorf("处理图片资源失败: %v", err)
+		return fmt.Errorf("处理图片失败 (下载URL: %s): %v", downloadUrl, err)
 	}
 
 	shot, err := models.GetShotByIDGorm(p.DB, shotID)
 	if err != nil {
 		return err
 	}
-	log.Printf("图片id %s上传成功: %s", shotID, finalURL)
 	return shot.UpdateImage(p.DB, finalURL)
 }
 
@@ -576,10 +661,26 @@ func (p *Processor) handleTTSResult(shotId string, result *models.TaskResult) er
 
 // 处理视频生成结果 -> 更新 VideoUrl
 func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) error {
+
+	var remotePath string
+
+	if result.TaskVideo != nil {
+		remotePath = result.TaskVideo.Path
+	}
+
+	if remotePath == "" {
+		return fmt.Errorf("视频路径为空")
+	}
+
+	// 构造下载 URL
+	downloadUrl := p.getWorkerFileUrl(remotePath)
+	log.Printf("正在从 Worker 下载视频: %s", downloadUrl)
+
 	objectName := fmt.Sprintf("shots/%s/video.mp4", shotID)
-	finalURL, err := processResourceToMinIO(result, objectName)
+
+	finalURL, err := downloadAndUploadToMinIO(downloadUrl, objectName)
 	if err != nil {
-		return fmt.Errorf("处理视频资源失败: %v", err)
+		return fmt.Errorf("处理视频失败 (下载URL: %s): %v", downloadUrl, err)
 	}
 
 	log.Printf("视频上传成功: %s", finalURL)
@@ -588,6 +689,21 @@ func (p *Processor) handleVideoResult(shotID string, result *models.TaskResult) 
 		"status":     models.ShotStatusCompleted,
 		"updated_at": time.Now(),
 	}).Error
+}
+
+func (p *Processor) getWorkerFileUrl(filePath string) string {
+	// 方案 A: 假设 Worker 提供了一个通用的下载 API
+	// 例如: http://worker-frp-addr/v1/download?path=/home/stv/...
+	baseUrl := p.WorkerEndpoint // config.yaml 中的 worker地址
+	
+	// 如果是相对路径 (data/final/...)，可能需要拼接
+	// 如果是绝对路径 (/home/stv/...)，直接传给 API
+	
+	// 这里使用 QueryEscape 处理路径中的特殊字符
+	return fmt.Sprintf("%s/v1/download?path=%s", baseUrl, url.QueryEscape(filePath))
+
+	// 方案 B: 如果 Worker 只是简单的静态文件服务 (例如 python -m http.server)
+	// return fmt.Sprintf("%s/%s", baseUrl, filePath)
 }
 
 // processResourceToMinIO 通用资源处理函数
